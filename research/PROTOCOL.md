@@ -130,9 +130,39 @@ and   ebx, 0x3                   ; 2-bit state
 mov   DWORD PTR [rdi], ebx
 ```
 
-Four call sites, more than any other command. Being read-only, it is the best
-candidate for a safe framing gate — better than
-`FWU_GET_RECOVERY_IMAGE_INFO`, whose number is still unknown.
+Four call sites, more than any other command. Being read-only, it looked like
+the best candidate for a safe framing gate. **It was tried, and it failed.**
+
+### The header layout is NOT validated
+
+Sending `0x0000080A` (group `0x0A`, command 8) to the live FWU client returns
+**byte-identical output to command 0**:
+
+```
+ff 00 00 00 8d 00 00 00
+```
+
+Two different command words producing the same reply means this is a generic
+refusal envelope — `{u32 0x000000FF, u32 0x0000008D}` — emitted before command
+dispatch, not a per-command response. Note also that bit 15 is clear, so the
+reply is not itself in the header format.
+
+So the bitfield layout above remains **inferred and unconfirmed**. The
+disassembly evidence for it is solid as a description of how the *tool* builds
+requests; what is not established is that a bare correctly-grouped command is
+accepted at all.
+
+The likeliest reading is that the FWU client refuses everything until some
+precondition is met — a state the tool establishes before its first FWU
+transact. Candidates worth tracing, in order:
+
+1. Whatever the tool does *before* its first `rcx=0x17` transact.
+2. The helpers `0x14001f130` (4 callers) and `0x14000ef40` (29 callers).
+3. An MKHI-side enable or mode change.
+
+Resolving this by sending further speculative command words is explicitly out
+of scope: an accidental malformed `FWU_START` is the one failure this project
+cannot walk back.
 
 ### One transact chokepoint, no bulk bypass
 

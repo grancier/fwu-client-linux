@@ -68,6 +68,23 @@ def main():
         print(f"  failed - {exc}")
         return 1
 
+    print("\nFWU command 8 - update state (read-only)")
+    try:
+        header, state, raw = fwu.get_update_state(args.device)
+        print(f"  raw         : {raw.hex(' ')}")
+        print(f"  group       : 0x{header['group']:02X}"
+              f"   command: {header['command']}"
+              f"   is_response: {header['is_response']}"
+              f"   result: {header['result']}")
+        print(f"  state       : {state}")
+        ok = header["group"] == fwu.GROUP and header["is_response"]
+        print(f"  header layout validated: {'yes' if ok else 'NO'}")
+    except fwu.CommandRejected as exc:
+        print(f"  refused - {exc}")
+    except (MeiError, ValueError) as exc:
+        print(f"  failed - {exc}")
+        return 1
+
     if mkhi_version is None:
         print("\nno version source succeeded")
         return 1
