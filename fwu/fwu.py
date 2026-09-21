@@ -27,14 +27,19 @@ REJECTION_STATUS = 0xFF
 _VERSION_OFFSET = 28
 
 
-# Header bitfield, recovered from FWUpdLcl64.exe: the tool stages a u32 at the
-# head of every request and decomposes replies with the same shifts.
+# Header bitfield, recovered from FWUpdLcl64.exe and confirmed live: the ME
+# echoes group and command and sets the response bit exactly here.
 GROUP = 0x0A
 RESPONSE_BIT = 1 << 15
 
-# Read-only state query. 4-byte request, 8-byte reply, two meaningful bits.
+# Group 0x0A rides on MKHI, not on the FWU client. Sending 0x080A to MKHI
+# returns 0a 88 00 89 - group and command echoed, response bit set - whereas
+# the FWU client refuses it with the same envelope it gives every command.
+GROUP_TRANSPORT = clients.MKHI
+
+# Read-only state query. 4-byte request, header-only.
 CMD_GET_UPDATE_STATE = 8
-_STATE_REPLY_SIZE = 8
+_STATE_REPLY_SIZE = 4
 
 
 class CommandRejected(ValueError):
@@ -57,28 +62,25 @@ def parse_header(word):
 
 
 def get_update_state(device=None):
-    """Query FWU command 8 for the update state.
+    """Send group 0x0A command 8 over MKHI.
 
-    Read-only: the request is the bare header and the reply carries a
-    two-bit state. Returns (header_fields, state, raw_reply).
+    Read-only: the request is the bare header. Returns (header_fields,
+    raw_reply). The ME dispatches this and reports a result code in the
+    header rather than returning state, so the caller inspects
+    fields["result"].
     """
     kwargs = {"device": device} if device else {}
-    with MeiChannel(clients.FWU, **kwargs) as channel:
+    with MeiChannel(GROUP_TRANSPORT, **kwargs) as channel:
         channel.send(pack_header(CMD_GET_UPDATE_STATE))
         reply = channel.recv()
 
-    if len(reply) != _STATE_REPLY_SIZE:
-        raise ValueError(
-            f"expected {_STATE_REPLY_SIZE} B reply, got {len(reply)} B: {reply.hex()}"
-        )
-    word, payload = struct.unpack("<2I", reply)
-    if word == REJECTION_STATUS:
-        raise CommandRejected(
-            f"command {CMD_GET_UPDATE_STATE} refused (status 0x{word:02X}, "
-            f"code 0x{payload:02X}) - same envelope as command 0, so the client "
-            "is refusing before it reaches command dispatch"
-        )
-    return parse_header(word), payload & 0x3, reply
+    if len(reply) < _STATE_REPLY_SIZE:
+        raise ValueError(f"short reply, {len(reply)} B: {reply.hex()}")
+    word = struct.unpack("<I", reply[:4])[0]
+    fields = parse_header(word)
+    if fields["group"] != GROUP or not fields["is_response"]:
+        raise ValueError(f"unexpected reply header: {reply[:4].hex()}")
+    return fields, reply
 
 
 def get_version_raw(device=None):

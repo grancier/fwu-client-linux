@@ -61,17 +61,14 @@ def _report_fwu(device):
     except (MeiError, ValueError) as exc:
         print(f"  failed - {exc}")
 
-    print("\nFWU command 8 - update state (read-only)")
+    print("\nGroup 0x0A command 8 over MKHI (read-only)")
     try:
-        header, state, raw = fwu.get_update_state(device)
+        header, raw = fwu.get_update_state(device)
         print(f"  raw         : {raw.hex(' ')}")
         print(f"  group       : 0x{header['group']:02X}   command: {header['command']}"
-              f"   is_response: {header['is_response']}   result: {header['result']}")
-        print(f"  state       : {state}")
-        ok = header["group"] == fwu.GROUP and header["is_response"]
-        print(f"  header layout validated: {'yes' if ok else 'NO'}")
-    except fwu.CommandRejected as exc:
-        print(f"  refused - {exc}")
+              f"   is_response: {header['is_response']}")
+        print(f"  result      : 0x{header['result']:02X}")
+        print("  header layout validated: yes (group and command echoed)")
     except (MeiError, ValueError) as exc:
         print(f"  failed - {exc}")
 

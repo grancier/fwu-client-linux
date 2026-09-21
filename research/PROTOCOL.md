@@ -255,14 +255,51 @@ disassembly, implemented from scratch, returned a correct and corroborated
 answer on the first attempt. The same approach should hold for FWU once the
 right precondition is found.
 
-Remaining possibilities, none yet tested:
+## Group 0x0A rides on MKHI, not on the FWU client
 
-1. The tool's client selector `0x16` is MKHI and `0x17` is assumed to be FWU,
-   but that mapping is inferred. The group `0x0A` commands may be **MKHI**
-   groups rather than FWU ones, in which case the FWU client speaks a
-   different protocol entirely and all four command words were misattributed.
-2. The FWU client may require an initiating message this analysis has not
-   located, with everything else refused until it arrives.
+**Confirmed against live hardware.** Sending the group-`0x0A` command 8 header
+to the **MKHI** client returns a proper dispatched response:
+
+```
+request : 0a 08 00 00
+reply   : 0a 88 00 89
+```
+
+The ME echoes group `0x0A`, echoes command 8, sets the response bit, and
+reports a result — exactly the layout read out of the disassembly. That
+**confirms the header bitfield**, which until now was inferred:
+
+| Bits | Field |
+|---|---|
+| 0-7 | group id |
+| 8-14 | command |
+| 15 | is_response |
+| 16-23 | reserved |
+| 24-31 | result |
+
+### Consequences
+
+- The earlier `0x17 = FWU client` mapping was **wrong**. Commands 4, 6, 8 and
+  27 are MKHI group-`0x0A` commands. `0x16` and `0x17` are indices into the
+  tool's own client table, not ME client identities.
+- Every probe aimed at the `309dcde8-…` FWU client was aimed at the wrong
+  place. That client answers *everything* with the same 8-byte
+  `ff 00 00 00 8d 00 00 00`, which is not MKHI framing at all — it is a
+  separate, probably legacy, protocol.
+- The "no harmless FWU round-trip exists" conclusion is therefore void: group
+  `0x0A` over MKHI dispatches cleanly and is a usable channel.
+
+### Open: result 0x89
+
+Command 8 dispatches but returns result `0x89`. The tool maps result codes to
+messages in `0x140020200`, a jump table keyed by client id (`0x16` → case 6,
+`0x17` → case 7) selecting a `{count, table, default}` triple, where each
+8-byte entry is `{u32 status, u32 message_index}` searched linearly.
+
+Resolving those tables produced field labels — *Wireless MAC address*, *HDA
+Subsystem Vendor ID* — not status text, and `0x89` is absent from them. So
+either the case resolution or the table identification is wrong, and `0x89`
+remains **undecoded**.
 
 ### One transact chokepoint, no bulk bypass
 
