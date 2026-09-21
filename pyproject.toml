@@ -1,0 +1,40 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "fwu-client-linux"
+version = "0.1.0"
+description = "Linux-native client for the Intel CSME firmware-update HECI endpoint"
+readme = "README.md"
+requires-python = ">=3.9"
+license = { file = "LICENSE" }
+authors = [{ name = "Gary Rancier" }]
+keywords = ["intel", "csme", "me", "heci", "mei", "firmware"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3",
+    "Topic :: System :: Hardware",
+]
+dependencies = []
+
+[project.optional-dependencies]
+dev = ["pytest>=7.0", "ruff>=0.1"]
+
+[project.scripts]
+fwu-info = "fwu.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/grancier/fwu-client-linux"
+
+[tool.setuptools]
+packages = ["fwu"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py39"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

@@ -12,8 +12,8 @@ import sys
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
 
-from fwu import clients  # noqa: E402
-from fwu.mei import MeiChannel  # noqa: E402
+from fwu import clients
+from fwu.mei import MeiChannel
 
 
 def main():

@@ -43,13 +43,32 @@ So the remaining work is protocol recovery, not credential recovery.
 
 Confirmed on Ubuntu 24.04, kernel 7.0.0-31-generic, CSME 15.0.
 
-## Installation
+## Building from source
 
-No dependencies beyond the standard library.
+The client itself has **no dependencies beyond the standard library**; the dev
+extras are only pytest and ruff.
 
 ```bash
-git clone <this repo>
+git clone git@github.com:grancier/fwu-client-linux.git
 cd fwu-client-linux
+
+make venv && . .venv/bin/activate
+make install-dev      # editable install plus test and lint extras
+make test             # unit tests, no hardware needed
+make lint
+```
+
+To build distributables, or install without a venv:
+
+```bash
+make build            # wheel and sdist into dist/
+make install          # pip install .
+```
+
+Either installs the `fwu-info` console script. You can also run straight from
+a clone with no install at all:
+
+```bash
 sudo ./bin/fwu-info
 ```
 
@@ -60,6 +79,28 @@ lsmod | grep mei_me
 ls -l /dev/mei0
 cat /sys/class/mei/mei0/dev_state     # expect ENABLED
 ```
+
+## Layout
+
+```
+fwu/            the client library
+  mei.py        MEI/HECI transport over /dev/mei0
+  clients.py    MEI client GUIDs
+  mkhi.py       MKHI informational queries
+  fwu.py        FWU client queries and header codec
+  cli.py        fwu-info entry point
+tests/          protocol unit tests, no hardware required
+research/       analysis tooling that regenerates every protocol finding
+  analyze_pe.py   sections, GUIDs, imports, strings, transact sites
+  parse_fpt.py    CSME image partition table and IUP check
+  fwu_raw.py      raw FWU reply dump from live hardware
+  PROTOCOL.md     findings, confirmed vs inferred
+  INPUTS.md       hashes of the analysed binaries
+```
+
+Intel's binaries are **not** redistributed here — their licence forbids it.
+`research/INPUTS.md` records the exact artefacts and hashes the findings came
+from, and the tooling regenerates them from your own copies.
 
 ## Usage
 
