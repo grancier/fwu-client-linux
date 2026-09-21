@@ -620,3 +620,84 @@ CSME 15.x: that commands 2/4/6 keep their meaning (this platform's FWU client
 serves 0x12/0x18/0x1A and rejects 0x00, so the command space differs by
 generation), and the numeric encoding of FWU_ENV_MANUFACTURING. A 15.x
 reference binary would settle both.
+
+## Verification against the v15 Windows client — result: not cross-checkable
+
+The encoder's command codes (2/4/6) come from the CSME 12.0 Linux binary. The
+question was whether the v15 Windows FWUpdLcl64.exe corroborates them. It does
+not, and cannot:
+
+- Its FWU client (selector 0x19) receives **only 0x12, 0x18, 0x1A** — never
+  2, 4 or 6.
+- `FWU_START` / `FWU_DATA` / `FWU_END` have **zero code references**; they
+  exist only in the ME error-string table.
+
+So the v15 Windows tool never drives the HECI upload path. It writes the image
+over **SPI** instead. The encoder therefore has no v15 reference to validate
+against — the only reference for HECI FWU_START/DATA/END is the CSME 12.0
+binary, a different generation.
+
+## How the image gets written — and why this board blocks the SPI path
+
+Two mechanisms exist:
+
+1. **HECI FWU (the encoder's path).** The ME receives the image over HECI and
+   writes its own region internally. Needs no host SPI access — which is what
+   makes it attractive on a locked board. But its v15 command codes are
+   unverified (above).
+
+2. **Host SPI (what the v15 Windows tool uses).** The host writes the ME
+   region of the flash directly. This needs the ME region to be host-writable,
+   exposed one of three ways:
+   - flash descriptor grants host write access to the ME region, **or**
+   - HMRFPO (`Intel(R) ME Region Flash Protection Override`, MKHI group 0x05
+     cmd 1) — the ME lifts protection on its own region, **or**
+   - the **Flash Descriptor Override Strap (GPIO33) pulled low** at boot — a
+     physical jumper.
+
+On jartunus `/proc/mtd` exposes **BIOS only**, so the descriptor does not
+grant host access to the ME region. The v15 tool's own strings anticipate
+exactly this: *Could not verify the SPI access permissions* and *Please
+
+## Verification against the v15 Windows client — result: not cross-checkable
+
+The encoder's command codes (2/4/6) come from the CSME 12.0 Linux binary. The
+question was whether the v15 Windows FWUpdLcl64.exe corroborates them. It does
+not, and cannot:
+
+- Its FWU client (selector 0x19) receives **only 0x12, 0x18, 0x1A** — never
+  2, 4 or 6.
+- `FWU_START` / `FWU_DATA` / `FWU_END` have **zero code references**; they
+  exist only in the ME error-string table.
+
+So the v15 Windows tool never drives the HECI upload path. It writes the image
+over **SPI** instead. The encoder therefore has no v15 reference to validate
+against — the only reference for HECI FWU_START/DATA/END is the CSME 12.0
+binary, a different generation.
+
+## How the image gets written — and why this board blocks the SPI path
+
+Two mechanisms exist:
+
+1. **HECI FWU (the encoder's path).** The ME receives the image over HECI and
+   writes its own region internally. Needs no host SPI access — which is what
+   makes it attractive on a locked board. But its v15 command codes are
+   unverified (above).
+
+2. **Host SPI (what the v15 Windows tool uses).** The host writes the ME
+   region of the flash directly. This needs the ME region host-writable,
+   exposed one of three ways:
+   - the flash descriptor grants host write access to the ME region, or
+   - HMRFPO (ME Region Flash Protection Override, MKHI group 0x05 cmd 1) —
+     the ME lifts protection on its own region, or
+   - the Flash Descriptor Override Strap (GPIO33) pulled low at boot — a
+     physical jumper.
+
+On jartunus `/proc/mtd` exposes **BIOS only**, so the descriptor does not
+grant host access to the ME region. The v15 tool's own strings anticipate
+exactly this: "Could not verify the SPI access permissions" and "Please
+assert Flash Descriptor Override Strap (GPIO33) to low, Power Cycle and
+Retry." The strap is hardware.
+
+So on this board the SPI path is closed without physical intervention, and the
+HECI path's command codes are unverified. Those are the two walls.
