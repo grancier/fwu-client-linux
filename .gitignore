@@ -1,15 +1,17 @@
 # Only generated artefacts are ignored. Every source file needed to inspect,
 # modify and build the client is tracked:
 #
-#   fwu/*.py         the client library and CLI
-#   tests/*.py       the test suite
-#   research/*.py    analysis tooling that regenerates the protocol findings
-#   pyproject.toml   packaging and the fwu-info entry point
-#   Makefile         build, install, test and lint targets
+#   fwu/*.py          the client library and CLI
+#   tests/*.py        the test suite
+#   research/*.py     analysis tooling that regenerates the protocol findings
+#   research/disasm/  disassembly the findings were read out of
+#   pyproject.toml    packaging and the fwu-info entry point
+#   Makefile          build, install, test and lint targets
 #   LICENSE README.md research/*.md
 #
 # The client has no third-party dependencies, so a clone plus a Python 3.9+
-# interpreter is a complete build environment.
+# interpreter is a complete build environment. Verified by cloning and running
+# make install-dev && make test && make lint against a bare checkout.
 
 # Python bytecode
 __pycache__/
@@ -30,11 +32,10 @@ venv/
 .ruff_cache/
 .coverage
 
-# Intel-distributed binaries and firmware payloads. These are inputs to the
+# Intel-distributed executables and firmware payloads. These are inputs to the
 # analysis, not inputs to the build - nothing here is needed to compile, test
 # or run the client. research/INPUTS.md records their hashes so an analyst can
-# verify their own copies, and research/analyze_pe.py regenerates every
-# finding from them.
+# verify their own copies against the tracked disassembly.
 *.bin
 *.exe
 *.CAP
