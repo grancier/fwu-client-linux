@@ -571,3 +571,52 @@ unlike the Windows build, where no transact site exceeded 1036 bytes.
 CSME System Tools are generation-matched. This build targets **CSME 12.0**;
 this platform runs **15.0.42.2384**. It is a protocol reference here, not
 something to run against a 15.x part.
+
+## The update sequence — recovered and encoded
+
+Traced in the native Linux FWUpdLcl (CSME 12.0) by walking the callers of the
+heci_write wrapper to the chunking loop. All three packets are implemented in
+`fwu/update.py` as a pure encoder and validated byte-for-byte in
+`tests/test_update.py`.
+
+### FWU_START — command 2, 90-byte request, 24-byte reply
+
+    +0    u32 command = 2
+    +4    u32 total_image_length
+    +12   u8  UpdateEnvironment
+    +46   u32 flags (0 in the direct-update path)
+    +58   16-byte OEM id (optional, all-zero when omitted)
+
+From the disassembly: `mov edx,0x5a` (size 90), `mov [rsp+0x70],0x2`
+(command), `mov [rsp+0x74],r12d` (image length), `mov [rsp+0x7c],r14b`
+(UpdateEnvironment), `lea rdi,[rbx+0x3a]; mov ecx,0x10` (16-byte OEM copy).
+
+### FWU_DATA — command 4, (11 + chunk) request, 8-byte reply
+
+    +0    u32 command = 4
+    +4    u32 chunk_length
+    +8    3 pad bytes
+    +11   chunk payload
+
+Chunk ceiling = max_msg - 12, matching the tool's `sub r10d,0xc`. On a
+4096-byte channel that is 4084 bytes/chunk; the 3,272,704-byte 15.0.56 image
+plans as 802 chunks (801 x 4084 + a 1420-byte tail).
+
+### FWU_END — command 6, 4-byte request, write-only
+
+### Dry-run validation
+
+`fwu-dryrun <image>` encodes the whole sequence and confirms the chunks
+reconstruct the source image exactly. Run against the real 15.0.56.2834 image
+it produces START `02 00 00 00 00 f0 31 00`, first DATA header
+`04 00 00 00 f4 0f 00 00`, last DATA `04 00 00 00 8c 05 00 00`, END
+`06 00 00 00` — all matching the recovered layout.
+
+### Still gated on the two CSME-15 unknowns
+
+The encoder is complete and correct against the CSME 12.0 reference. Sending
+is deliberately not implemented, because two values remain unproven on
+CSME 15.x: that commands 2/4/6 keep their meaning (this platform's FWU client
+serves 0x12/0x18/0x1A and rejects 0x00, so the command space differs by
+generation), and the numeric encoding of FWU_ENV_MANUFACTURING. A 15.x
+reference binary would settle both.

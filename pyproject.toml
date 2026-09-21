@@ -25,6 +25,7 @@ dev = ["pytest>=7.0", "ruff>=0.1"]
 
 [project.scripts]
 fwu-info = "fwu.cli:main"
+fwu-dryrun = "fwu.dryrun_cli:main"
 
 [project.urls]
 Homepage = "https://github.com/grancier/fwu-client-linux"
