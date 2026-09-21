@@ -1,5 +1,24 @@
 # fwu-client-linux
 
+> **⚠️ WORK IN PROGRESS — READ BEFORE USING ⚠️**
+>
+> **This is unfinished, experimental software. There is NO GUARANTEE that it
+> works, and NO GUARANTEE that it will not BRICK YOUR DEVICE.**
+>
+> **It has NOT been validated in a live environment. No complete firmware
+> update has ever succeeded with this client. The one full attempt made against
+> real hardware was refused by the ME at the final step.**
+>
+> **Writing CSME firmware is NOT reversible from software. A failed write is
+> recovered with an external SPI programmer, not a reboot. If that is not a
+> recovery path you are equipped and willing to use, do not run the write
+> path at all.**
+>
+> **ANY USE IS ENTIRELY AT YOUR OWN RISK.** You accept full responsibility for
+> any damage, data loss, or unbootable hardware that results. If you need a
+> supported firmware update, use your vendor's tool or Intel's own
+> `FWUpdate/LINUX64/FWUpdLcl` from the CSME System Tools package.
+
 A Linux-native client for the Intel CSME firmware-update HECI endpoint, the
 protocol Intel ships as `FWUpdLcl`. Intel does build that tool for Linux, as
 `FWUpdate/LINUX64/FWUpdLcl` inside the CSME System Tools packages, but those
