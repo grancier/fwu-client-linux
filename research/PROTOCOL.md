@@ -846,3 +846,95 @@ which cannot begin an update, give:
 Only 0 clears the environment check and fails later on the length, so
 `0x81` is "invalid UpdateEnvironment" and `0x206` is "invalid image length".
 Both are now in `flash.STATUS_TEXT`.
+
+## What the ME is actually sent: assembled code partitions, not the file
+
+**Confirmed** by disassembling Intel's v15 Linux `FWUpdLcl`, and by a failed
+update on this platform.
+
+A first attempt sent the raw 3,272,704-byte image file. All 802 `FWU_DATA`
+chunks were accepted, and `FWU_END` then returned status `0x2C9`. Decoding
+that against Intel's own message table gives **"Wrong structure of Update
+Image."** The firmware was untouched, which is the designed behaviour: the ME
+parses the assembled result only once it has all of it, and commits nothing
+until it validates.
+
+### Intel builds a new buffer
+
+The update function at `0x162e0` takes `(buffer, length, env, flags, oem,
+progress)`. Its full-update caller does not pass the file. It:
+
+| Step | Instruction | Meaning |
+|---|---|---|
+| sum sizes | `16f54: mov r14d,[rdi+4]` then `16f67: add r14d,[rax]` over 8-byte entries | total = sum of selected partition lengths |
+| bounds check | `170a0: cmp [rsp+4], eax` where `eax = offset + size` | each partition must fit inside the file, else error `0x1F9` |
+| allocate | `16fe9: call malloc` with that total | a buffer exactly the summed size |
+| concatenate | `1704c..1705d: memcpy(buf + written, src + offset, size)` | partitions laid end to end |
+| advance | `17069: add r12d,[r15]` | destination cursor += this partition's size |
+
+There is **no header** in the assembled buffer and no `$FPT`. It is a plain
+concatenation, and its length is what `FWU_START` declares.
+
+The descriptor array is `{u32 offset, u32 size}` pairs, so entry *i*'s size
+sits at `desc + 8i + 4`, which is why the sum starts at `[rdi+4]` and then
+strides by 8 from `[rdi+0xc]`.
+
+### Which partitions, and the arithmetic that proves it
+
+The updatable code partitions are `IVBP`, `RBEP`, `FTPR`, `NFTP`, `PMCP`,
+`PPHY` and `PCHC`. For the 15.0.56.2834 image they total exactly **2,727,936**
+bytes, which is byte-for-byte what this part reports through FWU command
+`0x18`. That equality is the confirmation: the ME states how much it expects,
+and the assembled stream matches it.
+
+| Partition | Source offset | Length |
+|---|---|---|
+| IVBP | `0x0002000` | 16,384 |
+| RBEP | `0x0089000` | 98,304 |
+| FTPR | `0x00a1000` | 1,200,128 |
+| NFTP | `0x01c6000` | 1,228,800 |
+| PMCP | `0x02f2000` | 155,648 |
+| PPHY | `0x0318000` | 24,576 |
+| PCHC | `0x031e000` | 4,096 |
+| | **total** | **2,727,936** |
+
+Over a 4096-byte channel that plans as 668 chunks with a 3,908-byte tail,
+against 802 chunks for the raw file.
+
+Note that update images legitimately contain data partitions: the Dell CSME
+12.0 update image carries `MFS`, `WCOD`, `LOCL` and others, and its file is
+12,025,856 bytes against 5,206,016 bytes of code. Their presence in the file
+is normal. They are simply not transmitted.
+
+Implemented as `Image.update_stream()` in `fwu/preflight.py`.
+
+## The FWU status table
+
+`fwu/status.py` carries 295 decoded statuses, generated from Intel's binary
+rather than transcribed. The binary holds a status-to-index table of 8-byte
+`{u32 status, u32 index}` entries at file offset `0x17a768`, and a message
+block of 1008-byte records whose short text begins at `+0` and long
+description at `+501`. Resolving one against the other yields the text.
+
+The decode validates itself against statuses already observed live:
+
+| Status | Decoded text | Where it was seen |
+|---|---|---|
+| `0x08D` | FW Update process received Heci command message with unknown command type. | the `0xFF / 0x8D` refusal envelope |
+| `0x2C0` | Heci message length is not as expected. | header-only START and DATA probes |
+| `0x2C4` | FWU_END Heci command was sent, but there was no FWU_DATA command before it. | header-only END probe |
+| `0x2C9` | Wrong structure of Update Image. | END after sending the raw file |
+
+Each is exactly the error its probe should provoke, which is strong evidence
+the table base and stride are right.
+
+### A correction to the UpdateEnvironment reasoning
+
+The environment byte was first singled out by probing with `image_length = 0`,
+where env 0 answered `0x206` and env 1, 2 and a bogus `0x5A` answered `0x81`.
+The decoded table shows those codes are **"Memory allocation error occurred"**
+and **"Specified partition was not found in the Update Image"**, neither of
+which is an environment complaint; the real one is `0x2C1`. So that
+discrimination was weaker than it appeared. The value is settled regardless,
+because Intel's own caller passes it as a literal zero, `xor edx, edx` at
+`0x17894`, alongside `xor ecx, ecx` for the flags word.

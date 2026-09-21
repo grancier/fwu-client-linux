@@ -12,8 +12,10 @@ drivers. No Intel binaries, no kernel modules, no vendor tooling.
 ## Status
 
 **Read and write paths both work.** The write path is implemented and its
-encoding is verified against Intel's own native Linux CSME 15.0 build; the
-send itself has not yet been run to completion on hardware.
+encoding is verified against Intel's own native Linux CSME 15.0 build. A first
+send reached `FWU_END` and was refused, because it transmitted the image file
+rather than the assembled code partitions; that is fixed and documented below,
+but a full send has not since been run to completion on hardware.
 
 | Capability | State |
 |---|---|
@@ -23,7 +25,9 @@ send itself has not yet been run to completion on hardware.
 | FWU client reachability + negotiated limits | working |
 | FWU `0x12` status, `0x18` updatable size, `0x1A` IUP inventory | working |
 | FWU `GET_VERSION` (command 0) | **rejected by CSME 15** — legacy path, see below |
-| `FWU_START` / `FWU_DATA` / `FWU_END` | implemented, encoding verified, send untested |
+| `FWU_START` / `FWU_DATA` / `FWU_END` | implemented, encoding verified against Intel |
+| Update-stream assembly (code partitions) | working |
+| FWU status decoding (295 codes) | working |
 | Image parsing and pre-write gates | working |
 
 Command codes 2 / 4 / 6 were confirmed implemented on a live CSME 15.0.42.2384
@@ -175,6 +179,29 @@ partitions, the IUPs required since CSME 12, no overrun past end of image,
 digest match, ME state `ENABLED`, local firmware update enabled, image newer
 than running, same major version, and the image's code partitions totalling
 exactly the size the ME reports through command `0x18`.
+
+### What is actually transmitted
+
+**Not the image file.** The ME receives the concatenated updatable code
+partitions, with no header, and `FWU_START` declares that length. Intel's
+own tool does the same: it sums the partition sizes, allocates a buffer of
+exactly that total, and copies the partitions into it end to end.
+
+For a 3,272,704-byte CSME 15.0 image the stream is 2,727,936 bytes, which is
+byte-for-byte what the ME reports as updatable. Sending the file instead is
+accepted chunk by chunk and then refused at `FWU_END` with status `0x2C9`,
+Wrong structure of Update Image. Data partitions such as `MFS` are normal
+in an update image; they are simply not sent.
+
+### Status decoding
+
+`fwu/status.py` carries 295 FWU status codes with Intel's own wording,
+generated from the message table in their binary rather than transcribed.
+
+```python
+from fwu import status
+status.describe(0x2C9)   # 'Wrong structure of Update Image.'
+```
 
 ### As a library
 

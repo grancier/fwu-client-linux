@@ -15,24 +15,15 @@ import time
 from dataclasses import dataclass, field
 
 from . import fwcaps, mkhi, preflight, update
+from . import status as status_mod
 from .session import FwuSession, one_shot
-
-# Statuses observed live on this platform. Anything absent is reported raw.
-STATUS_TEXT = {
-    0x000: "success",
-    0x08D: "command not recognised",
-    0x2BE: "busy, retry",
-    0x2C0: "rejected: invalid parameters or message length",
-    0x2C4: "rejected: wrong state for this command",
-    0x081: "rejected: invalid UpdateEnvironment",
-    0x206: "rejected: invalid image length",
-}
 
 SYSFS = "/sys/class/mei/mei0"
 
 
 def status_text(status: int) -> str:
-    return STATUS_TEXT.get(status, f"undocumented status 0x{status:X}")
+    """Render an FWU status using Intel's own decoded message table."""
+    return status_mod.describe(status)
 
 
 class UpdateAborted(RuntimeError):
@@ -149,16 +140,20 @@ def discover_env(device=None):
     return (distinct[0] if len(distinct) == 1 else None), rows
 
 
-def run_update(image_bytes, device=None, env=update.FWU_ENV_MANUFACTURING,
+def run_update(payload, device=None, env=update.FWU_ENV_MANUFACTURING,
                oem_id=None, progress=None, data_timeout=10.0,
                start_timeout=10.0, end_timeout=600.0):
     """Send START, every DATA chunk, then END, on one connection.
+
+    `payload` must be the assembled update stream from
+    `Image.update_stream()`, not the image file. The ME is sent only the
+    concatenated code partitions, and FWU_START declares that length.
 
     Raises UpdateAborted on the first non-success status. Returns the END
     reply on success.
     """
     with FwuSession(device=device) as session:
-        plan = update.plan_update(image_bytes, session.max_msg,
+        plan = update.plan_update(payload, session.max_msg,
                                   update_env=env, oem_id=oem_id)
 
         reply = session.send_raw(plan.start_packet(), timeout=start_timeout)

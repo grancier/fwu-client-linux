@@ -25,7 +25,7 @@ def _print_preflight(report):
     print(f"  size        : {image.size} bytes")
     print(f"  sha256      : {image.sha256}")
     print(f"  version     : {image.fw_version_str}")
-    print(f"  code size   : {image.code_size} bytes")
+    print(f"  code size   : {image.code_size} bytes  (this is what is sent)")
     print()
     print("platform")
     print(f"  dev_state   : {report.dev_state}")
@@ -127,9 +127,15 @@ def main(argv=None):
 
     oem = bytes.fromhex(args.oem_id) if args.oem_id else None
 
-    with open(args.image, "rb") as handle:
-        data = handle.read()
-    plan = update.plan_update(data, 4096, update_env=env, oem_id=oem)
+    payload, used = report.image.update_stream()
+    print("update stream (concatenated code partitions, no header)")
+    for name, offset, length in used:
+        print(f"  {name:<5} src {offset:#09x}  {length:>8} B")
+    print(f"  total       : {len(payload)} bytes, "
+          f"from a {report.image.size} byte file")
+    print()
+
+    plan = update.plan_update(payload, 4096, update_env=env, oem_id=oem)
     print("plan")
     print(f"  chunk size  : {plan.chunk_size} bytes")
     print(f"  chunks      : {plan.chunk_count}")
@@ -144,7 +150,7 @@ def main(argv=None):
     print("COMMITTING. Do not power off the machine.")
     started = time.time()
     try:
-        flash.run_update(data, device=args.device, env=env, oem_id=oem,
+        flash.run_update(payload, device=args.device, env=env, oem_id=oem,
                          progress=_progress)
     except flash.UpdateAborted as exc:
         print(f"\nABORTED: {exc}")
