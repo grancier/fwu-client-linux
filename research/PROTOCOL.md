@@ -454,3 +454,40 @@ Enforced ME-side, per the status strings:
 There is no harmless FWU round-trip on CSME 15 to validate framing against, so
 none of the above can be proven before `FWU_START` is sent for real. That is
 the main risk in finishing this.
+
+## Decoded: commands 0x18 and 0x1A
+
+**Confirmed live.**
+
+### 0x18 - updatable firmware size
+
+Returns a u32. On this platform `0x29A000` = 2,727,936, which is exactly the
+sum of the image's updatable **code** partitions, data partitions excluded:
+
+    IVBP 16384 + RBEP 98304 + FTPR 1200128 + NFTP 1228800
+         + PMCP 155648 + PPHY 24576 + PCHC 4096 = 2727936
+
+The command is a **stateful toggle**: a success is followed by status
+`0x2BE` on the next call, then succeeds again. `get_updatable_size()`
+retries once to absorb it.
+
+### 0x1A - installed update partition inventory
+
+Header `{8 zero bytes, u32 entry_size = 0x30, u32 count}` then fixed 48-byte
+entries of `{char name[4], u32 reserved, u16 version[4], ...}`:
+
+| Name | Version |
+|---|---|
+| PMCP | 150.2.10.1020 |
+| PPHY | 12.14.215.2015 |
+| SAMF | 1.17.0.0 |
+| PCHC | 15.0.0.1021 |
+
+PMCP and PPHY match the `$MN2` manifest versions read straight out of the
+firmware image, which independently confirms the decode.
+
+### 0x12 - status
+
+16 bytes, all zero while idle. Given the tool's progress string
+`Sending the update image to FW for verification: [ %u%% ]`, this is the
+likely progress/status structure during an update.

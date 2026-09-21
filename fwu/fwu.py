@@ -92,6 +92,62 @@ def query(command, device=None):
     return transact(command, device=device)
 
 
+# Command 0x18 alternates: a success is followed by STATUS_BUSY on the next
+# call, then succeeds again. Retrying once absorbs that.
+STATUS_BUSY = 0x2BE
+
+# Command 0x1A returns a header then fixed-size IUP entries.
+_IUP_COUNT_OFFSET = 12
+_IUP_SIZE_OFFSET = 8
+_IUP_FIRST = 16
+_IUP_NAME_LEN = 4
+_IUP_VERSION_OFFSET = 8
+
+
+def get_updatable_size(device=None):
+    """Bytes of firmware the ME will accept in an update.
+
+    On this platform it equals the sum of the image's updatable code
+    partitions - IVBP, RBEP, FTPR, NFTP, PMCP, PPHY, PCHC - with the data
+    partitions excluded.
+    """
+    for attempt in (1, 2):
+        try:
+            _, _, data = transact(CMD_QUERY_18, device=device)
+        except FwuError as exc:
+            if f"0x{STATUS_BUSY:X}" in str(exc) and attempt == 1:
+                continue
+            raise
+        if len(data) < 4:
+            raise ValueError(f"short size reply: {data.hex()}")
+        return struct.unpack("<I", data[:4])[0]
+    raise FwuError("updatable size unavailable after retry")
+
+
+def get_iup_inventory(device=None):
+    """Installed Independent Update Partitions and their versions.
+
+    Returns [(name, "major.minor.hotfix.build"), ...].
+    """
+    _, _, data = transact(CMD_QUERY_1A, device=device)
+    if len(data) < _IUP_FIRST:
+        raise ValueError(f"short IUP reply: {len(data)} B")
+    entry_size = struct.unpack_from("<I", data, _IUP_SIZE_OFFSET)[0]
+    count = struct.unpack_from("<I", data, _IUP_COUNT_OFFSET)[0]
+    if not entry_size or count > 64:
+        raise ValueError(f"implausible IUP header: size={entry_size} count={count}")
+
+    entries = []
+    for i in range(count):
+        base = _IUP_FIRST + i * entry_size
+        if base + _IUP_VERSION_OFFSET + 8 > len(data):
+            break
+        name = data[base:base + _IUP_NAME_LEN].decode("ascii", "replace").strip("\0")
+        quad = struct.unpack_from("<4H", data, base + _IUP_VERSION_OFFSET)
+        entries.append((name, ".".join(str(v) for v in quad)))
+    return entries
+
+
 def parse_legacy_version(record):
     """Read 'major.minor.hotfix.build' from a pre-CSME-15 version record."""
     if len(record) not in LEGACY_RESPONSE_SIZES:

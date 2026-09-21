@@ -60,16 +60,26 @@ def _report_fwu(device):
     except (MeiError, ValueError) as exc:
         print(f"  failed - {exc}")
 
-    print("\nFWU client - queries issued by FWUpdLcl64")
-    for command in (fwu.CMD_QUERY_12, fwu.CMD_QUERY_18, fwu.CMD_QUERY_1A):
-        try:
-            code, status, data = fwu.query(command, device)
-            print(f"  0x{command:02X} -> response 0x{code:02X}  status 0x{status:02X}  "
-                  f"data {len(data)} B  {data[:12].hex(' ')}")
-        except fwu.CommandRejected as exc:
-            print(f"  0x{command:02X} -> rejected: {exc}")
-        except (fwu.FwuError, MeiError, ValueError) as exc:
-            print(f"  0x{command:02X} -> {exc}")
+    print("\nFWU client - updatable firmware size (command 0x18)")
+    try:
+        size = fwu.get_updatable_size(device)
+        print(f"  {size} bytes (0x{size:X})")
+    except (fwu.FwuError, MeiError, ValueError) as exc:
+        print(f"  failed - {exc}")
+
+    print("\nFWU client - installed update partitions (command 0x1A)")
+    try:
+        for name, version in fwu.get_iup_inventory(device):
+            print(f"  {name:<6} {version}")
+    except (fwu.FwuError, MeiError, ValueError) as exc:
+        print(f"  failed - {exc}")
+
+    print("\nFWU client - status (command 0x12)")
+    try:
+        _, _, data = fwu.query(fwu.CMD_QUERY_12, device)
+        print(f"  {len(data)} B  {data.hex(' ')}")
+    except (fwu.FwuError, MeiError, ValueError) as exc:
+        print(f"  failed - {exc}")
 
 
 def _report_fwcaps(device):
