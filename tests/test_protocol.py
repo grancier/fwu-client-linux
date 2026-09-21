@@ -3,7 +3,7 @@ import struct
 
 import pytest
 
-from fwu import clients, mkhi
+from fwu import clients, fwcaps, mkhi
 from fwu import fwu as fwu_mod
 
 
@@ -72,3 +72,20 @@ def test_mkhi_block_order_is_minor_major_build_hotfix():
     reply = bytes([mkhi.GEN_GROUP, mkhi.CMD_GET_FW_VERSION | mkhi.RESPONSE_BIT, 0, 0]) + body
     minor, major, build, hotfix = struct.unpack("<4H", reply[4:12])
     assert f"{major}.{minor}.{hotfix}.{build}" == "15.0.42.2384"
+
+
+def test_fwcaps_request_matches_recovered_encoding():
+    """FWUpdLcl64 builds header 0x203 then the rule id."""
+    word = fwcaps.GROUP_FWCAPS | (fwcaps.CMD_GET_RULE << 8)
+    assert word == 0x203
+    assert fwcaps.RULE_LOCAL_FW_UPDATE == 7
+
+
+def test_fwcaps_reply_layout_matches_the_binary_checks():
+    """Reply >= 13 B, payload length 4 at +8, data at +9."""
+    reply = bytes([fwcaps.GROUP_FWCAPS,
+                   fwcaps.CMD_GET_RULE | fwcaps.RESPONSE_BIT, 0, 0])
+    reply += struct.pack("<I", 7) + bytes([4]) + struct.pack("<I", 1)
+    assert len(reply) == 13
+    assert reply[8] == 4
+    assert struct.unpack("<H", reply[9:11])[0] == fwcaps.LOCAL_FW_UPDATE_ENABLED

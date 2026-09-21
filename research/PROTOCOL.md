@@ -211,9 +211,58 @@ connection is not the same as accepting commands. A firmware that has local FW
 update disabled would connect and then refuse every command — exactly the
 observed `0xFF / 0x8D` for both command 0 and command 8.
 
-Testing this means finding how the tool determines that state, which is likely
-an MKHI query rather than an FWU one, and checking whether the platform
-exposes an enable switch at all.
+### How the tool determines it — MKHI FWCAPS rule 7
+
+**Confirmed**, both from the binary and by implementing it against live
+hardware. The check is not an FWU query at all:
+
+```asm
+lea   rcx, [rbp+0x214]        ; u16 out-param
+call  0x140010e30             ; -> 0x1400205d0
+movzx eax, WORD PTR [rbp+0x214]
+cmp   r14w, ax                ; r14 = 1
+jne   skip
+mov   r8d, 0x1d4              ; message 468, "Local FWUpdate is Enabled"
+```
+
+`0x1400205d0` builds an 8-byte request with header `0x203` — group 3
+(FWCAPS), command 2 (GET_RULE) — and the rule id in the second u32:
+
+| Field | Value |
+|---|---|
+| Request | `{u32 0x00000203, u32 rule_id}`, 8 B |
+| Rule id for local FW update | `7` |
+| Reply | at least 13 B |
+| Reply +0..3 | MKHI header, result byte at +3 |
+| Reply +4..7 | rule id echo |
+| Reply +8 | payload length, checked `== 4` |
+| Reply +9..12 | payload; low u16 is the value |
+| Meaning | `1` = local firmware update enabled |
+
+Implemented in `fwu/fwcaps.py`.
+
+### Result: the hypothesis is wrong
+
+Against this platform the query returns **1 — local firmware update is
+ENABLED** — and the FWU client still refuses both command 0 and command 8 with
+the same `0xFF / 0x8D`.
+
+So a disabled-update policy does not explain the refusal, and that line of
+reasoning is closed.
+
+What it does establish is the method: a request encoding read out of the
+disassembly, implemented from scratch, returned a correct and corroborated
+answer on the first attempt. The same approach should hold for FWU once the
+right precondition is found.
+
+Remaining possibilities, none yet tested:
+
+1. The tool's client selector `0x16` is MKHI and `0x17` is assumed to be FWU,
+   but that mapping is inferred. The group `0x0A` commands may be **MKHI**
+   groups rather than FWU ones, in which case the FWU client speaks a
+   different protocol entirely and all four command words were misattributed.
+2. The FWU client may require an initiating message this analysis has not
+   located, with everything else refused until it arrives.
 
 ### One transact chokepoint, no bulk bypass
 

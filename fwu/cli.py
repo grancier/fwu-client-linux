@@ -8,7 +8,7 @@ import argparse
 import os
 import sys
 
-from . import __version__, clients, fwu, mkhi
+from . import __version__, clients, fwcaps, fwu, mkhi
 from .mei import DEFAULT_DEVICE, MeiError, probe
 
 SYSFS = "/sys/class/mei/mei0"
@@ -76,6 +76,19 @@ def _report_fwu(device):
         print(f"  failed - {exc}")
 
 
+def _report_fwcaps(device):
+    """Report the rule Intel's updater checks before touching the FWU client."""
+    print("\nFWCAPS rule 7 - local firmware update")
+    try:
+        value, enabled = fwcaps.local_fw_update_state(device)
+        print(f"  raw value   : {value} (0x{value:04X})")
+        print(f"  local FW update: {'ENABLED' if enabled else 'DISABLED'}")
+        if not enabled:
+            print("  -> explains FWU refusing every command")
+    except (MeiError, fwcaps.FwCapsError) as exc:
+        print(f"  failed - {exc}")
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(prog="fwu-info", description=__doc__)
     parser.add_argument("--device", default=DEFAULT_DEVICE,
@@ -90,6 +103,7 @@ def main(argv=None):
     _report_sysfs()
     _report_clients(args.device)
     _report_mkhi(args.device)
+    _report_fwcaps(args.device)
     _report_fwu(args.device)
     return 0
 
