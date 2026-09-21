@@ -4,7 +4,7 @@ __pycache__/
 
 # Disassembly artefacts and firmware payloads stay out of the repo.
 research/*.asm
-research/*.txt
+research/*.log
 *.bin
 *.exe
 *.CAP
