@@ -1,115 +1,120 @@
-"""FWU client queries.
+"""The FWU client protocol.
 
-The FWU client carries no message header, unlike MKHI: a request is a bare
-little-endian u32 command code. That difference is what `proto_ver` 1 against
-MKHI's 2 signals.
+Unlike MKHI, the FWU client takes no group/command header. A request is a
+bare little-endian u32 command, optionally followed by a payload. The reply
+opens with a u32 response code and a u32 status:
 
-Command 0 returns a fixed-size version record whose length identifies the ME
-generation - 48, 52 or 56 bytes. All three layouts open with seven u32, so the
-version quad always begins at offset 28 and can be read without branching on
-size.
+    request  : <u32 command> [payload]
+    reply    : <u32 response_code> <u32 status> [data]
+
+`response_code` is `command + 1` when the command was recognised, and
+`UNKNOWN_RESPONSE` when it was not. `status` is zero on success.
+
+Recovered from FWUpdLcl64.exe, which stages the bare command word and then
+validates the echo, and confirmed against CSME 15.0 hardware.
 """
 import struct
 
 from . import clients
 from .mei import MeiChannel
 
-CMD_GET_VERSION = 0x00000000
+# Reply code the ME returns for a command it does not recognise, paired with
+# STATUS_UNKNOWN. Both observed live and corroborated by the binary's own
+# status table, which maps 0x8D to "UNKNOWN".
+UNKNOWN_RESPONSE = 0xFF
+STATUS_UNKNOWN = 0x8D
+STATUS_SUCCESS = 0x00
 
-# Record lengths for ME generations 6, 7 and 8+.
-RESPONSE_SIZES = (48, 52, 56)
+_HEADER_LEN = 8
 
-# CSME 15 answers with two u32 instead of a record. Observed identically for
-# command 0 and command 8, so it is a generic refusal, not a per-command reply.
-REJECTION_SIZE = 8
-REJECTION_STATUS = 0xFF
+# Commands FWUpdLcl64.exe issues to this client. Numbering is the ME's, not
+# ours; no attempt is made here to guess at commands the tool does not use.
+CMD_QUERY_12 = 0x12
+CMD_QUERY_18 = 0x18
+CMD_QUERY_1A = 0x1A
 
-_VERSION_OFFSET = 28
-
-
-# Header bitfield, recovered from FWUpdLcl64.exe and confirmed live: the ME
-# echoes group and command and sets the response bit exactly here.
-GROUP = 0x0A
-RESPONSE_BIT = 1 << 15
-
-# Group 0x0A rides on MKHI, not on the FWU client. Sending 0x080A to MKHI
-# returns 0a 88 00 89 - group and command echoed, response bit set - whereas
-# the FWU client refuses it with the same envelope it gives every command.
-GROUP_TRANSPORT = clients.MKHI
-
-# Read-only state query. 4-byte request, header-only.
-CMD_GET_UPDATE_STATE = 8
-_STATE_REPLY_SIZE = 4
+# Legacy version query. CSME 15 answers it with UNKNOWN; older generations
+# returned a 48, 52 or 56-byte record whose version quad began at offset 28.
+CMD_LEGACY_VERSION = 0x00
+LEGACY_RESPONSE_SIZES = (48, 52, 56)
+_LEGACY_VERSION_OFFSET = 28
 
 
 class CommandRejected(ValueError):
-    """The ME returned a rejection rather than a version record."""
+    """The ME did not recognise the command."""
 
 
-def pack_header(command, group=GROUP):
-    """Build the u32 request header for a FWU command."""
-    return struct.pack("<I", (group & 0xFF) | ((command & 0x7F) << 8))
+class FwuError(RuntimeError):
+    """The ME recognised the command but reported a non-zero status."""
 
 
-def parse_header(word):
-    """Split a reply header word into its fields."""
-    return {
-        "group": word & 0xFF,
-        "command": (word >> 8) & 0x7F,
-        "is_response": bool(word & RESPONSE_BIT),
-        "result": (word >> 24) & 0xFF,
-    }
+def transact(command, payload=b"", device=None):
+    """Send one FWU command. Returns (response_code, status, data).
 
-
-def get_update_state(device=None):
-    """Send group 0x0A command 8 over MKHI.
-
-    Read-only: the request is the bare header. Returns (header_fields,
-    raw_reply). The ME dispatches this and reports a result code in the
-    header rather than returning state, so the caller inspects
-    fields["result"].
+    Raises CommandRejected if the ME reports the command as unknown, and
+    FwuError on any other non-zero status.
     """
     kwargs = {"device": device} if device else {}
-    with MeiChannel(GROUP_TRANSPORT, **kwargs) as channel:
-        channel.send(pack_header(CMD_GET_UPDATE_STATE))
+    request = struct.pack("<I", command) + bytes(payload)
+    with MeiChannel(clients.FWU, **kwargs) as channel:
+        channel.send(request)
         reply = channel.recv()
 
-    if len(reply) < _STATE_REPLY_SIZE:
+    if len(reply) < _HEADER_LEN:
         raise ValueError(f"short reply, {len(reply)} B: {reply.hex()}")
-    word = struct.unpack("<I", reply[:4])[0]
-    fields = parse_header(word)
-    if fields["group"] != GROUP or not fields["is_response"]:
-        raise ValueError(f"unexpected reply header: {reply[:4].hex()}")
-    return fields, reply
+    response_code, status = struct.unpack("<2I", reply[:_HEADER_LEN])
 
-
-def get_version_raw(device=None):
-    """Return the raw version record from the FWU client."""
-    kwargs = {"device": device} if device else {}
-    with MeiChannel(clients.FWU, **kwargs) as channel:
-        channel.send(struct.pack("<I", CMD_GET_VERSION))
-        return channel.recv()
-
-
-def parse_version(record):
-    """Pull 'major.minor.hotfix.build' out of a raw FWU version record."""
-    if len(record) == REJECTION_SIZE:
-        status, code = struct.unpack("<2I", record)
+    if response_code == UNKNOWN_RESPONSE:
         raise CommandRejected(
-            f"command 0 rejected (status 0x{status:02X}, code 0x{code:02X}); "
-            "CSME 15 and later serve version data from MKHI instead"
+            f"command 0x{command:02X} not recognised "
+            f"(response 0x{response_code:02X}, status 0x{status:02X})"
         )
-    if len(record) not in RESPONSE_SIZES:
+    if status != STATUS_SUCCESS:
+        raise FwuError(
+            f"command 0x{command:02X} returned status 0x{status:02X} "
+            f"(response 0x{response_code:02X})"
+        )
+    if response_code != command + 1:
         raise ValueError(
-            f"unexpected FWU version record: {len(record)} B, "
-            f"expected one of {RESPONSE_SIZES}"
+            f"reply code 0x{response_code:02X} is not command+1 "
+            f"for 0x{command:02X}"
+        )
+    return response_code, status, reply[_HEADER_LEN:]
+
+
+def query(command, device=None):
+    """Issue one of the tool's known payload-free queries."""
+    if command not in (CMD_QUERY_12, CMD_QUERY_18, CMD_QUERY_1A):
+        raise ValueError(
+            f"0x{command:02X} is not a command FWUpdLcl64 issues; refusing to "
+            "send speculative command codes to the update endpoint"
+        )
+    return transact(command, device=device)
+
+
+def parse_legacy_version(record):
+    """Read 'major.minor.hotfix.build' from a pre-CSME-15 version record."""
+    if len(record) not in LEGACY_RESPONSE_SIZES:
+        raise ValueError(
+            f"unexpected record: {len(record)} B, expected one of "
+            f"{LEGACY_RESPONSE_SIZES}"
         )
     minor, major, build, hotfix = struct.unpack(
-        "<4H", record[_VERSION_OFFSET:_VERSION_OFFSET + 8]
+        "<4H", record[_LEGACY_VERSION_OFFSET:_LEGACY_VERSION_OFFSET + 8]
     )
     return f"{major}.{minor}.{hotfix}.{build}"
 
 
-def get_version(device=None):
-    """Query the FWU client for the running firmware version."""
-    return parse_version(get_version_raw(device))
+def get_legacy_version(device=None):
+    """Try the legacy version query. Raises CommandRejected on CSME 15+."""
+    kwargs = {"device": device} if device else {}
+    with MeiChannel(clients.FWU, **kwargs) as channel:
+        channel.send(struct.pack("<I", CMD_LEGACY_VERSION))
+        reply = channel.recv()
+    if len(reply) in LEGACY_RESPONSE_SIZES:
+        return parse_legacy_version(reply)
+    code, status = struct.unpack("<2I", reply[:_HEADER_LEN])
+    raise CommandRejected(
+        f"legacy version query not served (response 0x{code:02X}, "
+        f"status 0x{status:02X}); use MKHI GET_FW_VERSION instead"
+    )

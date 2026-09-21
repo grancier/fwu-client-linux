@@ -27,15 +27,20 @@ RESPONSE_BIT = 0x80
 def main():
     parser = argparse.ArgumentParser(description=__doc__,
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--group", required=True, help="e.g. 0x0a")
+    parser.add_argument("--group", default="0", help="e.g. 0x0a; ignored with --raw")
     parser.add_argument("--command", required=True, help="e.g. 8")
     parser.add_argument("--payload", default="", help="extra request bytes, hex")
     parser.add_argument("--client", default="mkhi", choices=sorted(clients.BY_NAME))
+    parser.add_argument("--raw", action="store_true",
+                        help="FWU form: send --command as a bare u32, ignore --group")
     args = parser.parse_args()
 
     group = int(args.group, 0)
     command = int(args.command, 0)
-    header = struct.pack("<I", (group & 0xFF) | ((command & 0x7F) << 8))
+    if args.raw:
+        header = struct.pack("<I", command)
+    else:
+        header = struct.pack("<I", (group & 0xFF) | ((command & 0x7F) << 8))
     request = header + bytes.fromhex(args.payload)
 
     print(f"client  : {args.client}")

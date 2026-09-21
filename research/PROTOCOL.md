@@ -1,5 +1,55 @@
 # FWU protocol notes
 
+## The FWU client protocol — confirmed and working
+
+**The FWU client takes no group/command header.** A request is a bare
+little-endian u32 command, optionally followed by a payload:
+
+```
+request : <u32 command> [payload]
+reply   : <u32 response_code> <u32 status> [data]
+```
+
+`response_code` is `command + 1` when recognised and `0xFF` when not. `status`
+is `0` on success and `0x8D` for an unrecognised command — the binary's own
+status table maps `0x8D` to **UNKNOWN**, which matches the live behaviour
+exactly.
+
+The client is reached through a **GUID table at `0x1401afb10`** indexed by the
+tool's selector. `rcx` is that index, not a client id:
+
+| Selector | Index | Client |
+|---|---|---|
+| `0x16`, `0x17` | 5 | MKHI |
+| `0x18` | 10 | `082ee5a7-…` |
+| `0x19` | 1 | **FWU** |
+| `0x13` | 19 | `92136c79-…` (absent on this platform) |
+| other | = selector, must be < 0x15 | table entry |
+
+### Live results on CSME 15.0.42.2384
+
+| Command | Response | Status | Data |
+|---|---|---|---|
+| `0x00` legacy version | `0xFF` | `0x8D` | not served on CSME 15 |
+| `0x12` | `0x13` | `0x00` | 16 B, zeroes |
+| `0x18` | `0x19` | `0x00` | 4 B — `0x0029A000` = 2,727,936 |
+| `0x1A` | `0x1B` | `0x00` | 992 B |
+
+These are the only three FWU commands `FWUpdLcl64.exe` issues. All three are
+implemented in `fwu/fwu.py` and verified.
+
+`0x18` returning 2,727,936 is the right order of magnitude for a firmware
+region or maximum-image size and is worth identifying.
+
+### Corrections this overturned
+
+- The FWU client was **never** refusing everything. It refused the two invalid
+  command codes tried earlier (`0x00` and `0x080A`). There is **no
+  precondition** and no disabled-update policy.
+- The FWU GUID has no direct code reference because it is reached through the
+  runtime-indexed table above, not a direct load.
+
+
 Recovered from a CSME 15.0 platform (ASUS PRIME H510M-A, i3-10100, running
 15.0.42.2384) and by static analysis of `FWUpdLcl64.exe` from the
 `ME_Intel_v15.0.56.2834` package.

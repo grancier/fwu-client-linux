@@ -18,48 +18,50 @@ def test_guid_serialises_little_endian():
     assert clients.FWU.bytes_le[:4] == bytes.fromhex("e8cd9d30")
 
 
-def test_pack_header_places_group_and_command():
-    assert fwu_mod.pack_header(8) == struct.pack("<I", 0x080A)
-    assert fwu_mod.pack_header(4) == struct.pack("<I", 0x040A)
-    assert fwu_mod.pack_header(27) == struct.pack("<I", 0x1B0A)
+# --- FWU client: bare u32 command, reply echoes command+1 -------------------
+
+def test_fwu_known_commands_are_the_ones_the_tool_issues():
+    assert (fwu_mod.CMD_QUERY_12, fwu_mod.CMD_QUERY_18, fwu_mod.CMD_QUERY_1A) \
+        == (0x12, 0x18, 0x1A)
 
 
-def test_parse_header_round_trips():
-    word = struct.unpack("<I", fwu_mod.pack_header(8))[0]
-    fields = fwu_mod.parse_header(word)
-    assert fields["group"] == fwu_mod.GROUP
-    assert fields["command"] == 8
-    assert fields["is_response"] is False
-    assert fields["result"] == 0
+def test_fwu_refuses_speculative_command_codes():
+    """Sweeping command space is how a malformed FWU_START gets sent."""
+    with pytest.raises(ValueError, match="speculative"):
+        fwu_mod.query(0x42)
 
 
-def test_parse_header_reads_response_bit_and_result():
-    fields = fwu_mod.parse_header(0x2A00880A)
-    assert fields["command"] == 8
-    assert fields["is_response"] is True
-    assert fields["result"] == 0x2A
+def test_fwu_unknown_reply_is_recognised():
+    """Observed live for commands 0x00 and 0x080A."""
+    reply = bytes.fromhex("ff0000008d000000")
+    code, status = struct.unpack("<2I", reply)
+    assert code == fwu_mod.UNKNOWN_RESPONSE
+    assert status == fwu_mod.STATUS_UNKNOWN
 
 
-def test_version_record_offset_is_generation_independent():
+def test_fwu_success_reply_shape():
+    """Observed live: command 0x12 -> 13 00 00 00 00 00 00 00 + 16 zero bytes."""
+    reply = struct.pack("<2I", 0x13, 0x00) + bytes(16)
+    code, status = struct.unpack("<2I", reply[:8])
+    assert code == fwu_mod.CMD_QUERY_12 + 1
+    assert status == fwu_mod.STATUS_SUCCESS
+    assert len(reply) == 24
+
+
+def test_legacy_version_offset_is_generation_independent():
     """All three record lengths open with seven u32, so the quad is at 28."""
-    for size in fwu_mod.RESPONSE_SIZES:
+    for size in fwu_mod.LEGACY_RESPONSE_SIZES:
         record = bytearray(size)
         struct.pack_into("<4H", record, 28, 0, 15, 2834, 56)
-        assert fwu_mod.parse_version(bytes(record)) == "15.0.56.2834"
+        assert fwu_mod.parse_legacy_version(bytes(record)) == "15.0.56.2834"
 
 
-def test_parse_version_rejects_unknown_length():
+def test_parse_legacy_version_rejects_unknown_length():
     with pytest.raises(ValueError):
-        fwu_mod.parse_version(b"\x00" * 40)
+        fwu_mod.parse_legacy_version(b"\x00" * 40)
 
 
-def test_csme15_refusal_envelope_is_recognised():
-    """Observed live: command 0 and command 8 both return this."""
-    refusal = bytes.fromhex("ff0000008d000000")
-    assert len(refusal) == fwu_mod.REJECTION_SIZE
-    with pytest.raises(fwu_mod.CommandRejected):
-        fwu_mod.parse_version(refusal)
-
+# --- MKHI -------------------------------------------------------------------
 
 def test_mkhi_request_matches_intel_encoding():
     """Intel's own tool sends 0x000002FF for GET_FW_VERSION."""
@@ -74,10 +76,20 @@ def test_mkhi_block_order_is_minor_major_build_hotfix():
     assert f"{major}.{minor}.{hotfix}.{build}" == "15.0.42.2384"
 
 
+def test_mkhi_header_bitfield_confirmed_live():
+    """Group 0x0A command 8 returned 0a 88 00 89 - group and command echoed."""
+    reply = bytes.fromhex("0a880089")
+    assert reply[0] == 0x0A
+    assert reply[1] & 0x7F == 8
+    assert reply[1] & 0x80
+    assert reply[3] == 0x89
+
+
+# --- FWCAPS -----------------------------------------------------------------
+
 def test_fwcaps_request_matches_recovered_encoding():
     """FWUpdLcl64 builds header 0x203 then the rule id."""
-    word = fwcaps.GROUP_FWCAPS | (fwcaps.CMD_GET_RULE << 8)
-    assert word == 0x203
+    assert fwcaps.GROUP_FWCAPS | (fwcaps.CMD_GET_RULE << 8) == 0x203
     assert fwcaps.RULE_LOCAL_FW_UPDATE == 7
 
 

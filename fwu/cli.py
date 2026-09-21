@@ -52,25 +52,24 @@ def _report_mkhi(device):
 
 
 def _report_fwu(device):
-    print("\nFWU GET_VERSION (legacy command 0)")
+    print("\nFWU client - legacy version query (command 0)")
     try:
-        version = fwu.parse_version(fwu.get_version_raw(device))
-        print(f"  version     : {version}")
+        print(f"  version     : {fwu.get_legacy_version(device)}")
     except fwu.CommandRejected as exc:
         print(f"  not served on this generation - {exc}")
     except (MeiError, ValueError) as exc:
         print(f"  failed - {exc}")
 
-    print("\nGroup 0x0A command 8 over MKHI (read-only)")
-    try:
-        header, raw = fwu.get_update_state(device)
-        print(f"  raw         : {raw.hex(' ')}")
-        print(f"  group       : 0x{header['group']:02X}   command: {header['command']}"
-              f"   is_response: {header['is_response']}")
-        print(f"  result      : 0x{header['result']:02X}")
-        print("  header layout validated: yes (group and command echoed)")
-    except (MeiError, ValueError) as exc:
-        print(f"  failed - {exc}")
+    print("\nFWU client - queries issued by FWUpdLcl64")
+    for command in (fwu.CMD_QUERY_12, fwu.CMD_QUERY_18, fwu.CMD_QUERY_1A):
+        try:
+            code, status, data = fwu.query(command, device)
+            print(f"  0x{command:02X} -> response 0x{code:02X}  status 0x{status:02X}  "
+                  f"data {len(data)} B  {data[:12].hex(' ')}")
+        except fwu.CommandRejected as exc:
+            print(f"  0x{command:02X} -> rejected: {exc}")
+        except (fwu.FwuError, MeiError, ValueError) as exc:
+            print(f"  0x{command:02X} -> {exc}")
 
 
 def _report_fwcaps(device):
