@@ -24,16 +24,23 @@ Layouts recovered from the native Linux FWUpdLcl (CSME 12.0 build):
 
 Chunk ceiling matches Intel's own arithmetic: max_msg - 12.
 
-## CSME-15 caveats (unverified assumptions transferred from CSME 12.0)
+## Verified against Intel's native CSME 15.0 Linux FWUpdLcl
 
-  1. Command codes 2 / 4 / 6 have not been proven to mean START / DATA / END
-     on CSME 15.x. Live probes established that the FWU client accepts
-     commands 0x12, 0x18, 0x1A on this platform and rejects 0x00 with
-     UNKNOWN, so the command space demonstrably differs across generations.
+Every constant below was read out of `FWUpdate/LINUX64/FWUpdLcl` from
+CSME System Tools v15.0 r15 (tool version 15.0.35.1951), and the command
+codes were separately confirmed live on CSME 15.0.42.2384 by `fwu.probe`.
 
-  2. UpdateEnvironment = 0 is the numeric encoding used in the 12.0
-     binary's direct-update caller. FWU_ENV_IFU is documented as obsolete;
-     FWU_ENV_MANUFACTURING is the only valid value on modern firmware.
+    START  cmd 2  @0x16371   90-byte buffer (mov edx,0x5a), reply 24, code 3
+           len @+4 (rsp+0x64), env @+12 byte (rsp+0x6c),
+           flags @+46 (rsp+0x8e), OEM 16 B @+58 (rsp+0x9a)
+    DATA   cmd 4  @0x1654c   header 11 (add rax,0xb), len @+4, reply 8, code 5
+    END    cmd 6  @0x16705   4-byte request
+    chunk  max_msg - 12      (lea r13d,[r11-0xc])
+    timeout 10000 ms         (mov r9d,0x2710) on both START and DATA
+
+UpdateEnvironment is 0: confirmed live, since env 0 is the only value that
+passes the ME's environment check (status 0x206 on a deliberately invalid
+length) while 1, 2 and a bogus 0x5A are all refused with status 0x81.
 """
 from __future__ import annotations
 
@@ -41,7 +48,7 @@ import struct
 from collections.abc import Iterator
 from dataclasses import dataclass
 
-# Command codes, from the CSME 12.0 reference. See caveats above.
+# Command codes. Verified against Intel v15 Linux FWUpdLcl and live hardware.
 CMD_FWU_START = 0x02
 CMD_FWU_DATA = 0x04
 CMD_FWU_END = 0x06
@@ -55,6 +62,14 @@ START_REPLY_SIZE = 24
 DATA_HEADER_SIZE = 11
 DATA_REPLY_SIZE = 8
 END_MSG_SIZE = 4
+
+# Reply codes the ME returns: response = command + 1.
+START_RESPONSE_CODE = CMD_FWU_START + 1   # 3
+DATA_RESPONSE_CODE = CMD_FWU_DATA + 1     # 5
+END_RESPONSE_CODE = CMD_FWU_END + 1       # 7
+
+# Intel uses 10000 ms on both START and DATA.
+INTEL_TIMEOUT_MS = 10000
 
 # Intel's tool subtracts 12 (not 11) from max_msg. We mirror that to stay
 # bit-identical with the reference.
