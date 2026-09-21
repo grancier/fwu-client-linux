@@ -94,7 +94,7 @@ def cmd_imports(args):
     print("imported DLLs:")
     for dll in dlls:
         print(f"  {dll}")
-    crypto = [d for d in dlls if re.search(r"crypt|bcrypt|ncrypt", d, re.I)]
+    crypto = [d for d in dlls if re.search(r"crypt|bcrypt|ncrypt", d, re.IGNORECASE)]
     print(f"\ncrypto imports: {crypto if crypto else 'none'}")
 
 
@@ -116,7 +116,8 @@ def cmd_strings(args):
 
 def cmd_transact(args):
     """Enumerate HECI transact call sites and their FWU command words."""
-    lines = open(args.asm).read().splitlines()
+    with open(args.asm) as handle:
+        lines = handle.read().splitlines()
     addr_re = re.compile(r"^\s*([0-9a-f]+):")
     call_re = re.compile(rf"call\s+{re.escape(args.transact)}\b")
     sel_re = re.compile(rf"mov\s+(?:ecx|ebx|r\d+d),0x{FWU_CLIENT_SELECTOR:x}\b")
