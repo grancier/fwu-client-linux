@@ -94,7 +94,7 @@ def cmd_imports(args):
     print("imported DLLs:")
     for dll in dlls:
         print(f"  {dll}")
-    crypto = [d for d in dlls if re.search(r"crypt|bcrypt|ncrypt", d, re.IGNORECASE)]
+    crypto = [d for d in dlls if re.search(r"crypt|bcrypt|ncrypt", d, re.I)]
     print(f"\ncrypto imports: {crypto if crypto else 'none'}")
 
 
@@ -116,8 +116,7 @@ def cmd_strings(args):
 
 def cmd_transact(args):
     """Enumerate HECI transact call sites and their FWU command words."""
-    with open(args.asm) as handle:
-        lines = handle.read().splitlines()
+    lines = open(args.asm).read().splitlines()
     addr_re = re.compile(r"^\s*([0-9a-f]+):")
     call_re = re.compile(rf"call\s+{re.escape(args.transact)}\b")
     sel_re = re.compile(rf"mov\s+(?:ecx|ebx|r\d+d),0x{FWU_CLIENT_SELECTOR:x}\b")
@@ -147,6 +146,146 @@ def cmd_transact(args):
     print(f"\nFWU-client sites: {fwu_count} of {len(sites)}")
 
 
+def runtime_functions(data):
+    """Exact function bounds from the x64 .pdata exception directory.
+
+    Each RUNTIME_FUNCTION is three RVAs: begin, end, unwind info.
+    """
+    base = image_base(data)
+    for name, vma, raw, size in sections(data):
+        if name != ".pdata":
+            continue
+        out = []
+        for off in range(raw, raw + size, 12):
+            begin, end, _ = struct.unpack_from("<3I", data, off)
+            if not begin:
+                continue
+            out.append((base + begin, base + end))
+        return sorted(out)
+    return []
+
+
+def containing_function(funcs, addr):
+    for begin, end in funcs:
+        if begin <= addr < end:
+            return begin, end
+    return None, None
+
+
+def cmd_functions(args):
+    data = load(args.binary)
+    funcs = runtime_functions(data)
+    print(f"{len(funcs)} functions in .pdata")
+    for begin, end in funcs[:args.limit]:
+        print(f"  0x{begin:x} .. 0x{end:x}  ({end - begin} B)")
+
+
+def cmd_trace(args):
+    """Walk callers upward from an address, using .pdata function bounds."""
+    data = load(args.binary)
+    funcs = runtime_functions(data)
+    with open(args.asm) as handle:
+        lines = handle.read().splitlines()
+
+    addr_re = re.compile(r"^\s*([0-9a-f]+):")
+    call_any = re.compile(r"call\s+0x([0-9a-f]+)")
+
+    # call target -> set of calling function starts
+    callers = {}
+    for line in lines:
+        m = addr_re.match(line)
+        c = call_any.search(line)
+        if not (m and c):
+            continue
+        site = int(m.group(1), 16)
+        target = int(c.group(1), 16)
+        begin, _ = containing_function(funcs, site)
+        if begin is not None:
+            callers.setdefault(target, set()).add(begin)
+
+    target = int(args.address, 16)
+    begin, end = containing_function(funcs, target)
+    if begin is None:
+        print(f"0x{target:x} is not inside any .pdata function")
+        return 1
+
+    print(f"0x{target:x} lies in function 0x{begin:x}..0x{end:x}\n")
+    frontier, seen = {begin}, {begin}
+    for depth in range(1, args.depth + 1):
+        parents = set()
+        for fn in frontier:
+            parents |= callers.get(fn, set())
+        parents -= seen
+        if not parents:
+            print(f"depth {depth}: no further callers (entry reached)")
+            break
+        print(f"depth {depth}: {len(parents)} caller(s)")
+        for p in sorted(parents):
+            print(f"  0x{p:x}")
+        seen |= parents
+        frontier = parents
+    return 0
+
+
+def cmd_calls(args):
+    """List, in order, everything a function calls and the strings it cites.
+
+    Reading the ordered call sequence of the function that reaches the first
+    FWU transact is how the client's required setup order is recovered.
+    """
+    data = load(args.binary)
+    funcs = runtime_functions(data)
+    secs, base = sections(data), image_base(data)
+    with open(args.asm) as handle:
+        lines = handle.read().splitlines()
+
+    start = int(args.function, 16)
+    begin, end = containing_function(funcs, start)
+    if begin is None:
+        print(f"0x{start:x} is not inside any .pdata function")
+        return 1
+    print(f"function 0x{begin:x}..0x{end:x}\n")
+
+    addr_re = re.compile(r"^\s*([0-9a-f]+):")
+    call_re = re.compile(r"call\s+0x([0-9a-f]+)")
+    ref_re = re.compile(r"#\s*0x([0-9a-f]+)")
+
+    def text_at(vma):
+        for name, svma, raw, size in secs:
+            lo = base + svma
+            if lo <= vma < lo + size:
+                off = raw + (vma - lo)
+                stop = data.find(b"\0", off)
+                if stop < 0 or stop - off > 120:
+                    stop = off + 120
+                chunk = data[off:stop]
+                try:
+                    s = chunk.decode("ascii")
+                except UnicodeDecodeError:
+                    return None
+                return s if len(s) > 3 and s.isprintable() else None
+        return None
+
+    for line in lines:
+        m = addr_re.match(line)
+        if not m:
+            continue
+        addr = int(m.group(1), 16)
+        if not begin <= addr < end:
+            continue
+        ref = ref_re.search(line)
+        if ref:
+            s = text_at(int(ref.group(1), 16))
+            if s:
+                print(f"  0x{addr:x}  str  {s[:88]}")
+        c = call_re.search(line)
+        if c:
+            target = int(c.group(1), 16)
+            mark = "  <-- HECI transact" if hex(target) == args.transact else ""
+            print(f"  0x{addr:x}  call 0x{target:x}{mark}")
+    return 0
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__,
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -161,6 +300,25 @@ def main():
     p.add_argument("--asm", required=True, help="objdump -d -M intel output")
     p.add_argument("--transact", default=TRANSACT_DEFAULT)
     p.set_defaults(func=cmd_transact)
+
+    p = sub.add_parser("functions", help="function bounds from .pdata")
+    p.add_argument("binary")
+    p.add_argument("--limit", type=int, default=20)
+    p.set_defaults(func=cmd_functions)
+
+    p = sub.add_parser("trace", help="walk callers upward from an address")
+    p.add_argument("binary")
+    p.add_argument("address", help="e.g. 0x1400032b9")
+    p.add_argument("--asm", required=True, help="objdump -d -M intel output")
+    p.add_argument("--depth", type=int, default=5)
+    p.set_defaults(func=cmd_trace)
+
+    p = sub.add_parser("calls", help="ordered calls and strings inside a function")
+    p.add_argument("binary")
+    p.add_argument("function", help="any address inside the function")
+    p.add_argument("--asm", required=True, help="objdump -d -M intel output")
+    p.add_argument("--transact", default=TRANSACT_DEFAULT)
+    p.set_defaults(func=cmd_calls)
 
     args = parser.parse_args()
     return args.func(args) or 0
