@@ -1,0 +1,10 @@
+__pycache__/
+*.pyc
+*.egg-info/
+
+# Disassembly artefacts and firmware payloads stay out of the repo.
+research/*.asm
+research/*.txt
+*.bin
+*.exe
+*.CAP

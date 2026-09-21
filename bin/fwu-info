@@ -1,0 +1,57 @@
+#!/usr/bin/env python3
+"""Report CSME state and MEI client reachability.
+
+Read-only. Opens the FWU client to read its negotiated limits and closes it
+without sending anything; the only message written to the ME is the MKHI
+version query.
+"""
+import argparse
+import os
+import sys
+
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
+
+from fwu import clients, mkhi  # noqa: E402
+from fwu.mei import DEFAULT_DEVICE, MeiError, probe  # noqa: E402
+
+SYSFS = "/sys/class/mei/mei0"
+
+
+def _sysfs(name):
+    try:
+        with open(os.path.join(SYSFS, name)) as handle:
+            return handle.read().strip()
+    except OSError:
+        return "(unavailable)"
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--device", default=DEFAULT_DEVICE)
+    args = parser.parse_args()
+
+    print("sysfs")
+    print(f"  dev_state : {_sysfs('dev_state')}")
+    print(f"  fw_ver    : {' '.join(_sysfs('fw_ver').split())}")
+    print(f"  hbm_ver   : {_sysfs('hbm_ver')}")
+
+    print("\nMEI clients")
+    for name in ("fwu", "mkhi"):
+        try:
+            max_msg, proto = probe(clients.BY_NAME[name], args.device)
+            print(f"  {name:<5}: max_msg={max_msg} B  proto_ver={proto}")
+        except MeiError as exc:
+            print(f"  {name:<5}: unreachable - {exc}")
+
+    print("\nMKHI GET_FW_VERSION")
+    try:
+        for label, version in mkhi.get_fw_version(args.device):
+            print(f"  {label:<12}: {version}")
+    except (MeiError, ValueError) as exc:
+        print(f"  failed - {exc}")
+        return 1
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
