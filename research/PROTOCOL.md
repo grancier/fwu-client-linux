@@ -77,6 +77,73 @@ call  0x14001ff00
 It is a **general** HECI transact, not FWU-specific: only 7 of its 45 call
 sites stage an immediate FWU command word, the rest load one from memory.
 
+### Recovered signature
+
+**Confirmed** by reading four call sites:
+
+| Location | Meaning |
+|---|---|
+| `rcx` | `0x17` at every site — a client or handle selector, never varies |
+| `rdx` | request buffer |
+| `r8d` | request size in bytes |
+| `r9` | response buffer |
+| `[rsp+0x20]` | pointer to the response-size slot (in/out) |
+| `[rsp+0x30]` | timeout, `0x7530` = 30000 ms |
+
+Return value in `eax`, zero on success — every site follows with
+`test eax,eax`.
+
+### Per-command message shapes
+
+**Confirmed** from the staging code at each site:
+
+| Command | Request | Response |
+|---|---|---|
+| 4 (`0x040A`) | — | 4 B |
+| 6 (`0x060A`) | 5 B: u32 header + one computed byte at +4 | 4 B |
+| 8 (`0x080A`) | header, size held in a register | 8 B |
+| 27 (`0x1B0A`) | 8 B: u32 header + `0xFF` at +4, then padding | 4 B |
+
+None of these is large enough to be `FWU_START` carrying an image length, and
+none sits in a chunking loop, so `FWU_START` and `FWU_DATA` are among the 38
+sites that resolve their command at runtime.
+
+### rcx selects the client
+
+**Confirmed.** `rcx` is not a constant — it picks which HECI client the
+transact targets:
+
+- `0x17` on all six FWU sites
+- `0` on a different flow that sends a `0x0101` header with a 10000 ms timeout
+
+Filtering transact sites on `rcx == 0x17` isolates FWU cleanly: **6 of 45**.
+
+### Command 8 is a status query
+
+**Confirmed** from its response handling — 4-byte request (header only),
+8-byte response, of which two bits are kept:
+
+```asm
+movzx ecx, BYTE PTR [rsp+0x4b]   ; result byte, response+3
+mov   ebx, DWORD PTR [rsp+0x4c]  ; response+4
+and   ebx, 0x3                   ; 2-bit state
+mov   DWORD PTR [rdi], ebx
+```
+
+Four call sites, more than any other command. Being read-only, it is the best
+candidate for a safe framing gate — better than
+`FWU_GET_RECOVERY_IMAGE_INFO`, whose number is still unknown.
+
+### One transact chokepoint, no bulk bypass
+
+The low-level send `0x14001eed0` has only **5 callers, all inside the transact
+layer itself** (`0x14001ff00`–`0x140020200`). There is no separate bulk path
+for image data, so `FWU_DATA` goes through the same wrapper with a
+runtime-resolved command word and a caller-supplied buffer.
+
+`0x140020200`, called with `edx = 0x17` right after each transact returns, is
+the status-to-message mapper.
+
 ## Command words seen as immediates
 
 | Word | Command | Sites | Note |
