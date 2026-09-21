@@ -112,12 +112,18 @@ Established so far:
 | MKHI header | 4 bytes: group, command (bit 7 set on reply), reserved, result |
 | MKHI `GET_FW_VERSION` request | `0x000002FF` LE |
 | MKHI version block | four LE u16: minor, major, build, hotfix |
-| **FWU framing** | **no header** — a request is a bare LE u32 command code |
+| **FWU header** | LE u32 bitfield: group 0-7, command 8-14, is_response 15, result 24-31 |
+| **FWU group** | `0x0A` on every command word observed |
+| Command words seen | `0x040A`, `0x060A`, `0x080A`, `0x1B0A` |
+| `UpdateEnvironment` | must be `FWU_ENV_MANUFACTURING`; `FWU_ENV_IFU` is obsolete |
 | Update sequence | `FWU_START` (carries `UpdateEnvironment`) → `FWU_DATA` → `FWU_END` |
 | Also present | `FWU_GET_RECOVERY_IMAGE_INFO` / `_DATA`, partial update by `PARTID` |
 
-The absent header is what `proto_ver` 1 against MKHI's 2 signals; nothing about
-the MKHI layout carries over.
+FWU shares MKHI's header *shape* but not its group. Legacy tooling's bare u32
+`0` is group 0, command 0 — wrong group — which is why CSME 15 rejects it.
+
+Full detail, with confirmed-versus-inferred marked per item, in
+[research/PROTOCOL.md](research/PROTOCOL.md).
 
 Ordering is enforced ME-side: `FWU_DATA` before `FWU_START`, `FWU_END` without
 a preceding `FWU_DATA`, and oversized `FWU_DATA` are each rejected.
