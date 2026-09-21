@@ -5,6 +5,7 @@ opened per client and closed when done.
 """
 import fcntl
 import os
+import select
 import struct
 
 DEFAULT_DEVICE = "/dev/mei0"
@@ -66,10 +67,16 @@ class MeiChannel:
             raise MeiError(f"message {len(payload)} B exceeds max {self.max_msg} B")
         return os.write(self.fd, bytes(payload))
 
-    def recv(self):
-        """Read one HECI message."""
+    def recv(self, timeout=5.0):
+        """Read one HECI message, waiting at most timeout seconds.
+
+        A silent ME would otherwise block the caller indefinitely.
+        """
         if self.fd is None:
             raise MeiError("channel is not open")
+        ready, _, _ = select.select([self.fd], [], [], timeout)
+        if not ready:
+            raise MeiError(f"no reply from client {self.guid} within {timeout}s")
         return os.read(self.fd, self.max_msg)
 
     def __enter__(self):

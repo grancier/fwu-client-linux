@@ -17,6 +17,7 @@ firmware today.
 | MEI transport (connect, send, recv) | working |
 | MKHI `GET_FW_VERSION` | working, cross-checked against sysfs |
 | FWU client reachability + negotiated limits | working |
+| FWU `GET_VERSION` (command 0) | **rejected by CSME 15** — legacy path, see below |
 | `FWU_START` / `FWU_DATA` / `FWU_END` | **not implemented** |
 
 ## Why this can exist
@@ -109,16 +110,50 @@ Established so far:
 | FWU limits | `max_msg` 4096 B, `proto_ver` 1 |
 | MKHI limits | `max_msg` 2048 B, `proto_ver` 2 |
 | MKHI header | 4 bytes: group, command (bit 7 set on reply), reserved, result |
+| MKHI `GET_FW_VERSION` request | `0x000002FF` LE |
 | MKHI version block | four LE u16: minor, major, build, hotfix |
+| **FWU framing** | **no header** — a request is a bare LE u32 command code |
 | Update sequence | `FWU_START` (carries `UpdateEnvironment`) → `FWU_DATA` → `FWU_END` |
 | Also present | `FWU_GET_RECOVERY_IMAGE_INFO` / `_DATA`, partial update by `PARTID` |
+
+The absent header is what `proto_ver` 1 against MKHI's 2 signals; nothing about
+the MKHI layout carries over.
 
 Ordering is enforced ME-side: `FWU_DATA` before `FWU_START`, `FWU_END` without
 a preceding `FWU_DATA`, and oversized `FWU_DATA` are each rejected.
 
-**FWU does not share MKHI's framing** — `proto_ver` 1 against MKHI's 2 — so the
-message layout cannot be extrapolated from the MKHI header above. Recovering it
-is the open work.
+### FWU command 0 is legacy
+
+Older tooling reads the firmware version from the FWU client with command 0,
+expecting a 48, 52 or 56-byte record by ME generation. **CSME 15.0 rejects it**,
+answering 8 bytes — two LE u32, `0x000000FF` then `0x0000008D`:
+
+```
+ff 00 00 00 8d 00 00 00
+```
+
+Version therefore comes from MKHI, which is the path this client uses. The
+rejection is still informative: the FWU client answers unknown commands with a
+clean error rather than misbehaving.
+
+It also removes a safety gate. There is no harmless FWU round-trip on this
+generation against which to validate message framing, so a write path cannot be
+proven correct before `FWU_START` is sent in earnest. That raises the cost of
+getting the struct wrong and is the main argument against the write path as
+currently scoped.
+
+### Why the version matters
+
+Intel's CSME Version Detection Tool treats a 15.0 firmware as patched only at
+hotfix 50 or above:
+
+```python
+if vers[0] == 15 and vers[1] == 0 and vers[2] >= 50:
+    return glob.DISCOVERY_NOT_VULNERABLE_PATCHED
+```
+
+So 15.0.42 reports `DISCOVERY_VULNERABLE`, while 15.0.50, 15.0.55 and 15.0.56
+all clear it. The margin above the threshold carries no further benefit.
 
 Images for CSME 12+ must be stitched with the obligatory Independent Update
 Partitions. A stitched CSME 15.0 image carries `PMCP`, `PPHY` and `PCHC`

@@ -11,7 +11,7 @@ import sys
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
 
-from fwu import clients, mkhi  # noqa: E402
+from fwu import clients, fwu, mkhi  # noqa: E402
 from fwu.mei import DEFAULT_DEVICE, MeiError, probe  # noqa: E402
 
 SYSFS = "/sys/class/mei/mei0"
@@ -44,11 +44,32 @@ def main():
             print(f"  {name:<5}: unreachable - {exc}")
 
     print("\nMKHI GET_FW_VERSION")
+    mkhi_version = None
     try:
         for label, version in mkhi.get_fw_version(args.device):
             print(f"  {label:<12}: {version}")
+            if mkhi_version is None:
+                mkhi_version = version
     except (MeiError, ValueError) as exc:
         print(f"  failed - {exc}")
+
+    print("\nFWU GET_VERSION (legacy command 0)")
+    try:
+        record = fwu.get_version_raw(args.device)
+        version = fwu.parse_version(record)
+        print(f"  record      : {len(record)} B")
+        print(f"  version     : {version}")
+        if mkhi_version and version != mkhi_version:
+            print(f"  MISMATCH against MKHI ({mkhi_version})")
+            return 1
+    except fwu.CommandRejected as exc:
+        print(f"  not served on this generation - {exc}")
+    except (MeiError, ValueError) as exc:
+        print(f"  failed - {exc}")
+        return 1
+
+    if mkhi_version is None:
+        print("\nno version source succeeded")
         return 1
     return 0
 
