@@ -97,6 +97,46 @@ class Image:
     def fw_version_str(self) -> str:
         return ".".join(str(v) for v in self.fw_version)
 
+    def update_stream(self):
+        """Assemble the bytes the ME expects to receive.
+
+        The ME is not sent the image file. Intel's own tool allocates a buffer
+        the size of the summed partition lengths and concatenates the selected
+        partitions into it, with no header, then declares that total as the
+        FWU_START image length. In the v15 Linux build this is the loop at
+        0x16f4d (sum the sizes), the malloc at 0x16fe9, and the copy loop at
+        0x17048.
+
+        Sending the raw file instead is what earns "Wrong structure of Update
+        Image" (status 0x2C9) at FWU_END: every chunk is accepted, because the
+        ME only parses the assembled result once it has all of it.
+
+        Returns (payload, [(name, offset, length), ...]).
+        """
+        chunks = []
+        used = []
+        for part in self.partitions:
+            if part.name not in CODE_PARTITIONS or not part.present:
+                continue
+            end = part.offset + part.length
+            if end > self.size:
+                # Intel refuses the same way, its error 0x1F9, at 0x170a0.
+                raise ImageError(
+                    f"partition {part.name} runs past end of image "
+                    f"({end} > {self.size})")
+            chunks.append(self.data[part.offset:end])
+            used.append((part.name, part.offset, part.length))
+
+        if not chunks:
+            raise ImageError("no updatable code partitions found in image")
+
+        payload = b"".join(chunks)
+        if len(payload) != self.code_size:
+            raise ImageError(
+                f"assembled {len(payload)} B but code partitions total "
+                f"{self.code_size} B")
+        return payload, used
+
 
 def _parse_manifest_at(data, sig_offset):
     """Decode the manifest header whose $MN2 signature sits at sig_offset."""
