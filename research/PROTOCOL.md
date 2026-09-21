@@ -289,6 +289,46 @@ reports a result — exactly the layout read out of the disassembly. That
 - The "no harmless FWU round-trip exists" conclusion is therefore void: group
   `0x0A` over MKHI dispatches cleanly and is a usable channel.
 
+## The full recovered command set
+
+**Confirmed** by matching each transact site's request buffer slot to the
+header immediate written into that exact slot — 24 of 45 sites resolve:
+
+| Group | Commands | Request sizes |
+|---|---|---|
+| `0x00` | 1, 2, 16 | 1036, 1036, 4 |
+| `0x05` | 7, 19 | 4, 4 |
+| `0x0A` | 4, 6, 8, 27 | 4, 5, 4/reg, 8 |
+| `0x12` / `0x18` / `0x1A` | 0 | 4, 4, 8 |
+| `0xF0` | 18, 20, 28 | 4, 4, 8 |
+| `0xFF` | 2, 29, 31 | 4, 4, 4 |
+
+Group `0xFF` command 2 is `GET_FW_VERSION` and group `0x03` command 2 is
+FWCAPS `GET_RULE`, both verified live, which validates the extraction.
+
+The per-site "selector" (`rcx`) is **not** a client id. Group `0x0A` carries
+selector `0x17` yet answers on MKHI, and `0x140020200` consumes the same value
+to choose an error table. It is an error-table index.
+
+### No image-sized request exists in this binary
+
+The largest request any of the 45 transact sites builds is **1036 bytes** — a
+4-byte header plus a 1032-byte body, at `0x140005d9b`:
+
+```asm
+mov BYTE PTR [rsp+0x50], 0x0     ; group 0x00
+mov BYTE PTR [rsp+0x51], dil     ; command from the caller's first argument
+mov r8d, 0x40c                   ; 1036 B request
+```
+
+and that 1032-byte body is `memset` to zero and never filled before the send.
+It is a large fixed-size query struct, not payload.
+
+For a tool that uploads a 3,272,704-byte image this is decisive: **the image
+upload does not go through this transact function at all**, or it is among the
+21 sites whose header is computed at runtime and has not been identified.
+Either way, `FWU_START`, `FWU_DATA` and `FWU_END` remain unlocated.
+
 ### Open: result 0x89
 
 Command 8 dispatches but returns result `0x89`. The tool maps result codes to

@@ -228,6 +228,69 @@ def cmd_trace(args):
     return 0
 
 
+def cmd_commands(args):
+    """Recover every MKHI request the tool issues, precisely.
+
+    For each transact call site, find which stack slot is handed over as the
+    request buffer (`lea rdx,[rsp+N]`), then the header immediate written into
+    that exact slot. Matching the slot avoids the false positives a plain
+    immediate scan produces.
+    """
+    with open(args.asm) as handle:
+        lines = handle.read().splitlines()
+
+    addr_re = re.compile(r"^\s*([0-9a-f]+):")
+    call_re = re.compile(rf"call\s+{re.escape(args.transact)}\b")
+    buf_re = re.compile(r"lea\s+rdx,\[(rsp|rbp)\+(0x[0-9a-f]+)\]")
+    size_re = re.compile(r"mov\s+r8d,(0x[0-9a-f]+)")
+    sel_re = re.compile(r"mov\s+ecx,(0x[0-9a-f]+)")
+
+    found = []
+    for i, line in enumerate(lines):
+        if not call_re.search(line):
+            continue
+        m = addr_re.match(line)
+        site = m.group(1) if m else "?"
+        window = lines[max(0, i - 60):i]
+
+        slot = None
+        for text in reversed(window):
+            b = buf_re.search(text)
+            if b:
+                slot = (b.group(1), b.group(2))
+                break
+        if slot is None:
+            continue
+
+        header = None
+        hdr_re = re.compile(
+            rf"mov\s+DWORD PTR \[{slot[0]}\+{re.escape(slot[1])}\],(0x[0-9a-f]+)")
+        for text in reversed(window):
+            h = hdr_re.search(text)
+            if h:
+                header = int(h.group(1), 16)
+                break
+        if header is None:
+            continue
+
+        sizes = size_re.findall("\n".join(window))
+        sels = sel_re.findall("\n".join(window))
+        found.append((site, header, sizes[-1] if sizes else "reg",
+                      sels[-1] if sels else "?"))
+
+    print(f"{len(found)} request headers recovered\n")
+    print("site          header    group  cmd  req    selector")
+    by_group = {}
+    for site, header, size, sel in sorted(found, key=lambda r: (r[1] & 0xFF, r[1] >> 8)):
+        group, cmd = header & 0xFF, (header >> 8) & 0x7F
+        by_group.setdefault(group, set()).add(cmd)
+        print(f"0x{site}  0x{header:06X}  0x{group:02X}   {cmd:<4} {size:<6} {sel}")
+    print("\ngroups in use:")
+    for group in sorted(by_group):
+        print(f"  0x{group:02X}: commands {sorted(by_group[group])}")
+    return 0
+
+
 def cmd_calls(args):
     """List, in order, everything a function calls and the strings it cites.
 
@@ -313,6 +376,12 @@ def main():
     p.add_argument("--asm", required=True, help="objdump -d -M intel output")
     p.add_argument("--depth", type=int, default=5)
     p.set_defaults(func=cmd_trace)
+
+    p = sub.add_parser("commands", help="recover every MKHI request header")
+    p.add_argument("binary")
+    p.add_argument("--asm", required=True, help="objdump -d -M intel output")
+    p.add_argument("--transact", default=TRANSACT_DEFAULT)
+    p.set_defaults(func=cmd_commands)
 
     p = sub.add_parser("calls", help="ordered calls and strings inside a function")
     p.add_argument("binary")
