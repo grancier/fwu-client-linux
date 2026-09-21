@@ -533,3 +533,41 @@ the group map recovered here:
 
 Group `0x05` being HMRFPO - Host ME Region Flash Protection Override - fits
 the SPI architecture exactly: unlock the ME region, write it, re-lock.
+
+## A Linux FWUpdLcl exists
+
+`CSME_Update_Linux.zip` contains a native Linux build:
+
+| | |
+|---|---|
+| `FWUpdLcl` | ELF 64-bit LSB PIE, x86-64, **stripped**, links only `libc.so.6` |
+| Size | 1,216,304 bytes - 28,675 disassembly lines vs the PE 199,157 |
+| Usage | `./FWUpdLcl -f <image.bin>` (from `CSME_Update.sh`) |
+| Bundled image | `CSME_FwUpdate_12.0.94.2380.bin` - **CSME 12.0** |
+
+It carries the same dual architecture as the Windows build: FWU HECI strings
+(`FWU_START`, `FWU_DATA`, `FWU_END`, `FWU_ENV_MANUFACTURING`) alongside SPI
+programming (`Reading HSFSTS register`, `Programming Flash`, flash-descriptor
+validation).
+
+### The HECI write path is generic
+
+Only three `write()` call sites exist. The HECI one is a plain
+`heci_write(client, buf, len)`:
+
+```asm
+cmp edx, DWORD PTR [rdi+0x14]   ; len vs client->max_msg
+mov ebx, 0x23                   ; error if larger
+ja  fail
+mov edi, DWORD PTR [rdi+0x19]   ; client->fd
+call write@plt
+```
+
+Length is fully variable, so a bulk HECI upload **is** expressible through it -
+unlike the Windows build, where no transact site exceeded 1036 bytes.
+
+### Generation caveat
+
+CSME System Tools are generation-matched. This build targets **CSME 12.0**;
+this platform runs **15.0.42.2384**. It is a protocol reference here, not
+something to run against a 15.x part.
