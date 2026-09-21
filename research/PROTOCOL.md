@@ -701,3 +701,148 @@ Retry." The strap is hardware.
 
 So on this board the SPI path is closed without physical intervention, and the
 HECI path's command codes are unverified. Those are the two walls.
+
+## CSME 15: START / DATA / END are implemented — confirmed live
+
+**Confirmed** on this platform (CSME 15.0.42.2384) by `fwu/probe.py`.
+
+### Method
+
+The ME answers an unrecognised command with a fixed refusal envelope,
+`0xFF / 0x8D`. A command it implements is dispatched and answers
+`response = command + 1` with a command-specific status. The two are
+distinguishable, so a **header-only** 4-byte message identifies whether a
+command exists without performing it:
+
+- START carries a 90-byte struct, so 4 bytes cannot supply an image length.
+- DATA before any START is rejected by the ME's ordering rules.
+- END with no preceding DATA is rejected by the same rules.
+
+Each probe ran on its own connection, and two controls ran first so the
+classifier was proven before anything was concluded from it.
+
+### Results
+
+| Command | Response | Status | Reply size | Verdict |
+|---|---|---|---|---|
+| `0x00` control | `0xFF` | `0x8D` | 8 B | unknown, as expected |
+| `0x18` control | `0x19` | `0x2BE` | 12 B | recognised, as expected |
+| **`0x02`** | `0x03` | `0x2C0` | **24 B** | **implemented — FWU_START** |
+| **`0x04`** | `0x05` | `0x2C0` | **8 B** | **implemented — FWU_DATA** |
+| **`0x06`** | `0x07` | `0x2C4` | 28 B | **implemented — FWU_END** |
+
+The reply **sizes** corroborate the layout independently: the CSME 12
+reference gives `START_REPLY_SIZE` 24 and `DATA_REPLY_SIZE` 8, and the live
+CSME 15 part returned exactly those. END answers with a distinct status
+(`0x2C4`, wrong state) from START and DATA (`0x2C0`, bad parameters), which is
+what the ordering rules predict.
+
+### What this corrects
+
+Two earlier conclusions in this document are **withdrawn**:
+
+1. *"The v15 Windows tool never drives the HECI upload path. It writes the
+   image over SPI instead."* The evidence was the presence of SPI
+   flash-programming strings plus zero code references to `FWU_START`. Both
+   legs fail:
+   - The **CSME 12.0 Linux** `FWUpdLcl`, which this document establishes does
+     drive HECI FWU, contains the *same* SPI strings, plus MEInfo and MEManuf
+     strings. It is none of those tools. The strings are a shared message
+     table linked into every System Tools binary, not evidence of a code path.
+   - The zero-references test does not work on this binary. Strings any
+     working updater must use — *FW Update completed successfully*, *Platform
+     must now be rebooted*, *Sending the update image to FW for verification*
+     — **also** show zero references, exactly like the SPI strings. Intel
+     resolves messages by index through a table, as this document already
+     records (`mov r8d, 0x1d4 ; message 468`), so no message string has a
+     direct cross-reference. The test cannot separate used from unused.
+
+2. *"Command codes 2/4/6 have not been proven to mean START / DATA / END on
+   CSME 15.x."* They are now proven implemented, with corroborating reply
+   sizes.
+
+It remains true that the v15 Windows binary issues only `0x12`, `0x18`, `0x1A`
+to the FWU client through the transact wrapper: filtering all 45 call sites on
+`ecx = 0x19` yields exactly those three. `0x19` is confirmed as the FWU
+selector by the code at `0x140011d3f` and `0x14001315d`, which stage a bare
+`0x12` / `0x18` and then check the reply equals `0x13` / `0x19`. Where that
+build performs its upload is still unidentified, and no longer matters: the ME
+implements the HECI receiver, which is what this client needs.
+
+Corroboration that HECI is the right path on a locked board: the Win-Raid
+CSME reference states that FWUpdate "does not require the user to have
+read/write access to the Engine firmware region of the system's SPI/BIOS
+chip, as dictated by the Flash Descriptor region permissions." On jartunus
+`/proc/mtd` exposes BIOS only and manufacturing mode is closed, so SPI is shut
+regardless.
+
+### Remaining unknown: the UpdateEnvironment constant
+
+Its numeric value is still unrecovered; the encoder uses `0` from the CSME 12
+reference. This is **not** a safety gate. The ME validates the field and
+answers a wrong value with a rejection, so a mis-guessed constant fails closed
+without starting anything. `fwu.flash.discover_env` narrows it further by
+sending START packets with `image_length = 0`, which cannot begin an update,
+and comparing statuses across environment values against a deliberately bogus
+one.
+
+## A native Linux CSME 15.0 FWUpdLcl exists, and the write path matches it
+
+`CSME System Tools v15.0 r15` ships `FWUpdate/LINUX64/FWUpdLcl`: ELF 64-bit
+PIE, x86-64, stripped, linking only `libc.so.6`, tool version 15.0.35.1951,
+sha256 `3f9be283b46ac1f9bdd883e05bf71e9d6ace553755fbf3c45b95d1e624f52757`.
+It runs on jartunus and reports `FW Version: 15.0.42.2384` over MEI, matching
+this client. Its own usage text says the update goes "via MEI".
+
+That closes the SPI question for good, and it supersedes the earlier note that
+no 15.0-generation Linux reference was available.
+
+### Every write-path constant, verified against it
+
+Disassembly addresses are file offsets in that binary.
+
+| Field | Value | Instruction |
+|---|---|---|
+| START command | 2 | `16371: mov dword ptr [rsp+0x60], 0x2` |
+| START buffer | 90 B, zeroed | `1634a: mov edx, 0x5a` before memset |
+| image length | `+4` | `16368: mov dword ptr [rsp+0x64], ebx` |
+| UpdateEnvironment | `+12`, one byte | `16379: mov byte ptr [rsp+0x6c], r15b` |
+| flags | `+46`, dword | `1637e: mov dword ptr [rsp+0x8e], r14d` |
+| OEM id | `+58`, 16 B | `16388: lea rdi,[rsp+0x9a]` + `mov ecx,0x10` |
+| START reply | 24 B | `1634f: mov qword ptr [rsp+0x38], 0x18` |
+| START response code | 3 | `163f5: cmp dword ptr [rsp+0x40], 0x3` |
+| DATA command | 4 | `1654c: mov dword ptr [rax], 0x4` |
+| DATA header | 11 B | `16552: add rax, 0xb` |
+| chunk length | `+4` | `1659f: mov dword ptr [rax+0x4], r13d` |
+| DATA request size | chunk + 11 | `165f5: lea rdx, [r15+0xb]` |
+| DATA reply | 8 B | `165a3: mov qword ptr [rsp+0x30], 0x8` |
+| DATA response code | 5 | `16650: cmp dword ptr [rsp+0x38], 0x5` |
+| chunk size | `max_msg - 12` | `16548: lea r13d, [r11-0xc]` |
+| channel floor | `max_msg > 12` | `16539: cmp r11, 0xc; jbe` (error 0x23) |
+| END command | 6 | `16705: mov dword ptr [rsp+0x38], 0x6` |
+| END request | 4 B | `166e2/166f9: mov edx, 0x4` |
+| timeout | 10000 ms | `163c9/165f9: mov r9d, 0x2710` |
+
+The loop at `16568..166d2` walks the image, clamping each chunk with
+`cmova` against the bytes remaining and accumulating progress in `r12d`,
+which is exactly what `UpdatePlan.iter_data_packets` produces.
+
+`tests/test_intel_v15_reference.py` asserts each row and names the
+instruction, so a future change to any constant reports which line of Intel's
+code it contradicts.
+
+### UpdateEnvironment is 0
+
+Confirmed live rather than inferred. START packets with `image_length = 0`,
+which cannot begin an update, give:
+
+| env | status |
+|---|---|
+| `0x00` | `0x206` |
+| `0x01` | `0x81` |
+| `0x02` | `0x81` |
+| `0x5A` bogus | `0x81` |
+
+Only 0 clears the environment check and fails later on the length, so
+`0x81` is "invalid UpdateEnvironment" and `0x206` is "invalid image length".
+Both are now in `flash.STATUS_TEXT`.

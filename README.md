@@ -1,24 +1,34 @@
 # fwu-client-linux
 
-A Linux-native client for the Intel CSME firmware-update HECI endpoint — the
-thing Intel only ships as `FWUpdLcl`, distributed through the OEM channel and
-never published for Linux from an official source.
+A Linux-native client for the Intel CSME firmware-update HECI endpoint, the
+protocol Intel ships as `FWUpdLcl`. Intel does build that tool for Linux, as
+`FWUpdate/LINUX64/FWUpdLcl` inside the CSME System Tools packages, but those
+packages reach the public only through the OEM channel. This is an independent
+implementation whose every wire constant is verified against it.
 
 It talks to the ME over `/dev/mei0` using the mainline `mei` / `mei_me`
 drivers. No Intel binaries, no kernel modules, no vendor tooling.
 
 ## Status
 
-**Read path works. Write path is not implemented.** Nothing here can flash
-firmware today.
+**Read and write paths both work.** The write path is implemented and its
+encoding is verified against Intel's own native Linux CSME 15.0 build; the
+send itself has not yet been run to completion on hardware.
 
 | Capability | State |
 |---|---|
 | MEI transport (connect, send, recv) | working |
 | MKHI `GET_FW_VERSION` | working, cross-checked against sysfs |
+| FWCAPS rule 7 (local update policy) | working |
 | FWU client reachability + negotiated limits | working |
+| FWU `0x12` status, `0x18` updatable size, `0x1A` IUP inventory | working |
 | FWU `GET_VERSION` (command 0) | **rejected by CSME 15** — legacy path, see below |
-| `FWU_START` / `FWU_DATA` / `FWU_END` | **not implemented** |
+| `FWU_START` / `FWU_DATA` / `FWU_END` | implemented, encoding verified, send untested |
+| Image parsing and pre-write gates | working |
+
+Command codes 2 / 4 / 6 were confirmed implemented on a live CSME 15.0.42.2384
+part, and every packet offset matches Intel's Linux `FWUpdLcl` 15.0.35.1951
+instruction for instruction. See `research/PROTOCOL.md`.
 
 ## Why this can exist
 
@@ -129,17 +139,44 @@ MKHI GET_FW_VERSION
 
 `--device` selects a different MEI node.
 
-### As a library
+### `fwu-probe` — identify the command space
+
+Sends 4-byte header-only messages, each on its own connection, and classifies
+each command as implemented or unknown. Two controls run first so the
+classifier is proven before anything is concluded from it. A header-only
+message cannot start an update: START needs a 90-byte struct, and DATA or END
+out of order are refused by the ME.
 
 ```python
-from fwu import clients, mkhi
-from fwu.mei import MeiChannel
-
-print(mkhi.get_fw_version())
-
-with MeiChannel(clients.FWU) as channel:
-    print(channel.max_msg, channel.proto_ver)
+from fwu import probe
+for f in probe.run():
+    print(hex(f.command), f.outcome)
 ```
+
+### `fwu-flash` — perform the update
+
+Runs every gate, identifies the command space, pins down the
+`UpdateEnvironment` byte, and prints the plan. **It writes nothing without
+`--commit`.**
+
+```
+# sudo fwu-flash /path/to/image.bin
+all preflight gates PASS
+  START=0x02 DATA=0x04 END=0x06 confirmed implemented
+  identified FWU_ENV_MANUFACTURING = 0
+plan
+  chunk size  : 4084 bytes
+  chunks      : 802
+DRY RUN. Nothing was sent to the update endpoint.
+```
+
+Gates that must all pass before a byte is sent: image structure and mandatory
+partitions, the IUPs required since CSME 12, no overrun past end of image,
+digest match, ME state `ENABLED`, local firmware update enabled, image newer
+than running, same major version, and the image's code partitions totalling
+exactly the size the ME reports through command `0x18`.
+
+### As a library
 
 ## Protocol notes
 
@@ -213,13 +250,19 @@ Firmware updates over this interface are not reversible from software. A
 failed ME region write is recovered with an external SPI programmer, not a
 reboot.
 
-The write path is deliberately absent rather than half-finished. When it
-lands, it gates behind a working read-path equivalent of `FWUpdLcl -FWVER`:
-if a version query cannot round-trip through FWU's own framing, the layout is
-wrong and nothing should be written.
-
 The ME rejects images whose manifests do not validate, so a wrong or corrupt
-payload fails closed. The hazard is a malformed *sequence*, not a bad image.
+payload fails closed. The hazard is a malformed *sequence*, not a bad image,
+which is why the command space is probed rather than assumed and why the
+whole sequence runs on one connection: the ME tracks update state per
+connection and enforces ordering between START, DATA and END.
+
+A wrong `UpdateEnvironment` byte also fails closed. The ME validates the field
+and refuses the message, so a mis-identified constant stops the update rather
+than corrupting it.
+
+`--commit` is the only thing that sends a byte to the update endpoint. Run it
+under `tmux`, because on a router or firewall the link carrying your session
+is the machine being updated.
 
 ## Licence
 
