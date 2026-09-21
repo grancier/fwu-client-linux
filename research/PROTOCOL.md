@@ -491,3 +491,45 @@ firmware image, which independently confirms the decode.
 16 bytes, all zero while idle. Given the tool's progress string
 `Sending the update image to FW for verification: [ %u%% ]`, this is the
 likely progress/status structure during an update.
+
+## The updater programs SPI directly, not over HECI
+
+**Confirmed.** Two independent FWUpdLcl builds (15.0.50 and 15.0.56) have an
+*identical* HECI command set across the same eight groups, and in neither does
+any transact site carry more than 1036 bytes. A 3.2 MB image cannot go that
+way.
+
+The binary instead carries a full SPI flash-programming path:
+
+    Failed to initialize SPI interface.
+    Could not verify the SPI access permissions, SPI programming is subject
+      to region protection conditions.
+    BIOS Region write access permissions do not match Intel recommended values.
+    Flash descriptor is not valid.
+    - Programming Flash [0x%07X] %5dKB of %5dKB - %3.0f percent complete.
+    - Verifying Flash  [0x%07lX] %5dKB of %5dKB - %3.0f percent complete.
+
+So the update flow is: HECI for control and inventory, **direct SPI writes for
+the image**, gated by flash-descriptor region permissions.
+
+`FWU_START` / `FWU_DATA` / `FWU_END` appear only in the ME status-code table
+the tool uses to render errors. The ME implements that upload protocol; this
+tool does not drive it. That resolves why no bulk HECI sender exists.
+
+### Corroboration from coreboot
+
+coreboot (GPL-2.0, `src/soc/intel/common/block/cse`) independently confirms
+the group map recovered here:
+
+| coreboot | Value | Recovered here |
+|---|---|---|
+| `MKHI_GROUP_ID_CBM` | `0x00` | cmds 1, 2, 16 |
+| `MKHI_GROUP_ID_HMRFPO` | `0x05` | cmds 7, 19 |
+| `MKHI_GROUP_ID_FWCAPS` | `0x03` | verified live |
+| `MKHI_GROUP_ID_BUP_COMMON` | `0xf0` | cmds 18, 20, 28 |
+| `MKHI_BUP_COMMON_GET_BOOT_PARTITION_INFO` | `0x1c` = 28 | exact match |
+| `MKHI_GEN_GET_FW_VERSION` | `0x02` in `0xff` | verified live |
+| `MKHI_CBM_GLOBAL_RESET_REQ` | `0x0b` in `0x00` | the reset step |
+
+Group `0x05` being HMRFPO - Host ME Region Flash Protection Override - fits
+the SPI architecture exactly: unlock the ME region, write it, re-lock.
